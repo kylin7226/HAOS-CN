@@ -147,6 +147,7 @@ jobs:
           echo "RELEASE_BODY=此为开发版，请不要当正式版使用" >> $GITHUB_ENV
 
       - name: Upload images to release
+        if: secrets.UPLOAD_TOKEN != ''
         id: upload-release
         uses: svenstaro/upload-release-action@v2
         with:
@@ -158,9 +159,15 @@ jobs:
           body: ${{ env.RELEASE_BODY }}
           prerelease: ${{ github.ref != 'refs/heads/main' }}
 
+      - name: Skip upload warning
+        if: secrets.UPLOAD_TOKEN == ''
+        run: |
+          echo "::warning::UPLOAD_TOKEN secret not configured, skipping release upload"
+          echo "Configure UPLOAD_TOKEN secret to enable automatic release uploads"
+
   trigger-full-images:
     needs: build
-    if: github.ref_name == 'main'
+    if: github.ref_name == 'main' && secrets.GH_PAT != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
