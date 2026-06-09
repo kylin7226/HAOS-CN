@@ -54,12 +54,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Checkout private repo
-        uses: actions/checkout@v5
-        with:
-          repository: desmond-dong/haos-cn-scripts
-          token: ${{ secrets.GH_PAT }}
-          path: private
+      # Note: Private repo checkout disabled - configure GH_PAT secret if needed
+      # - name: Checkout private repo
+      #   uses: actions/checkout@v5
+      #   with:
+      #     repository: desmond-dong/haos-cn-scripts
+      #     token: ${{ secrets.GH_PAT }}
+      #     path: private
 
       - name: Run only on main
         if: github.ref_name == 'main'
@@ -79,9 +80,15 @@ jobs:
       - name: Initialization environment and Free up disk space
         run: |
           sudo timedatectl set-timezone "Asia/Shanghai"
-          chmod +x private/*.sh
-          sudo private/release_space.sh
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          # chmod +x private/*.sh
+          # sudo private/release_space.sh
+          # sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          # Skip private repo scripts if not available
+          if [ -d "private" ]; then
+            chmod +x private/*.sh
+            sudo private/release_space.sh
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          fi
 
 
       - name: Clone source code and Change Settings.
@@ -97,8 +104,13 @@ jobs:
           
       - name: Run private build script
         run: |
-          chmod +x private/*.sh
-          private/haos.sh
+          # Skip if private scripts not available
+          if [ -f "private/haos.sh" ]; then
+            chmod +x private/*.sh
+            private/haos.sh
+          else
+            echo "Private build script not found, using default configuration"
+          fi
         env:
           MATRIX_TARGET: ${{matrix.target}}
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
