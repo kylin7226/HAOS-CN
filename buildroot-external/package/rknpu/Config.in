@@ -1,0 +1,9 @@
+config BR2_PACKAGE_RKNPU
+	bool "rknpu"
+	help
+	  Out-of-tree kernel module for the Rockchip RKNPU driver,
+	  ported from the rockchip-linux/kernel.
+	  Enables NPU hardware on Rockchip SoCs (RK3566/RK3568)
+	  when using a mainline kernel.
+
+	  https://github.com/w568w/rknpu-module
