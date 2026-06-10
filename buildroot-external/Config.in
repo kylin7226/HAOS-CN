@@ -1,0 +1,5 @@
+# HAOS-CN external packages
+source "$BR2_EXTERNAL_HASSOS_PATH/package/ap6236_firmware/Config.in"
+source "$BR2_EXTERNAL_HASSOS_PATH/package/ap6256_firmware/Config.in"
+source "$BR2_EXTERNAL_HASSOS_PATH/package/matter/Config.in"
+source "$BR2_EXTERNAL_HASSOS_PATH/package/rknpu/Config.in"
