@@ -107,10 +107,6 @@ index dc9f914a9..000000001 100644
 +		status = "disabled";
 +	};
 +};
-+
- &cpu0 {
- 	cpu-supply = <&vdd_cpu>;
- };
 -- 
 2.45.2
 
