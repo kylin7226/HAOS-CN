@@ -5,13 +5,27 @@ name: Rock 5B kernel verify
 # any secret, so it can run on a fork. It validates the highest-risk parts of the
 # port against pristine mainline v6.18 (the version configs/rock5b_defconfig pins):
 #   1. the vendored ysp MPP/RGA patches + the pwm-fan patch apply cleanly,
-#   2. the board kernel.config fragment's critical symbols resolve,
+#   2. the kernel .config resolves exactly like the real HAOS build (see below),
 #   3. the kernel + the in-tree vendor drivers (MPP/RGA/Panthor/pwm-fan) build,
 #   4. the Rock 5B device tree compiles (rk3588-rock-5b.dtb), which exercises the
 #      rknpu / pwm-fan / MPP-RGA DT nodes.
-# NOTE: the base config here is mainline arm64 defconfig + the board fragment,
-# an approximation of HAOS's own kernel base config; the goal is to catch patch /
-# Kconfig / DT / driver-build breakage, not to reproduce the exact HAOS .config.
+#
+# CONFIG FIDELITY: the kernel is configured the way Buildroot does it, not from a
+# generic defconfig. configs/rock5b_defconfig uses
+#   BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG  -> kernel/v6.18.y/kernel-arm64-rockchip.config (full base)
+#   BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES -> haos.config docker.config
+#       device-support.config device-support-wireless.config board/radxa/rock5b/kernel.config
+# Those base+fragment files live in the UPSTREAM home-assistant/operating-system
+# tree (HAOS-CN only ships the board fragment), so we sparse-clone just that kernel
+# dir, overlay it, then parse base+fragments straight out of rock5b_defconfig and
+# merge them with the kernel's own merge_config.sh. device-support.config is what
+# enables the media gates (MEDIA_CAMERA_SUPPORT / MEDIA_PLATFORM_SUPPORT / VIDEO_DEV)
+# that the board fragment's VIDEO_V4L2 / V4L2_MEM2MEM_DEV depend on.
+#
+# DEBUG WITHOUT A TOKEN: fork job logs need admin rights, but check-run annotations
+# do not. Every failure path here re-emits the real cause as ::error::/::warning::
+# annotations (patch failures, dropped symbols, built-in/module mismatches, and the
+# actual compiler error lines), so the run is self-diagnosing from the public API.
 
 on:
   push:
@@ -36,7 +50,7 @@ env:
 
 jobs:
   verify:
-    name: Build mainline v6.18 + Rock 5B patches
+    name: Build mainline v${{ env.KVER }} + Rock 5B patches
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -83,15 +97,57 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Configure (arm64 defconfig + board kernel.config fragment)
+      - name: Overlay upstream HAOS kernel config (base + fragment chain)
+        run: |
+          set -euo pipefail
+          # HAOS-CN ships only board/radxa/rock5b/kernel.config; the full base
+          # config (kernel-arm64-rockchip.config) and the v6.18.y fragments come
+          # from upstream home-assistant/operating-system. Sparse-clone just that
+          # kernel dir and drop it beside HAOS-CN's buildroot-external/kernel/ so
+          # $(BR2_EXTERNAL_HAOS_PATH)/kernel/v6.18.y/* resolves like the real build.
+          up="${RUNNER_TEMP}/os-upstream"
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/home-assistant/operating-system.git "${up}"
+          git -C "${up}" sparse-checkout set buildroot-external/kernel
+          ext="${GITHUB_WORKSPACE}/buildroot-external"
+          mkdir -p "${ext}/kernel"
+          cp -r "${up}/buildroot-external/kernel/v6.18.y" "${ext}/kernel/"
+          echo "Overlaid upstream kernel config dir:"
+          ls -la "${ext}/kernel/v6.18.y"
+
+      - name: Configure (faithful HAOS base config + fragment chain)
         run: |
           set -euo pipefail
           cd "${LINUX_DIR}"
-          make defconfig
-          frag="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/kernel.config"
-          KCONFIG_CONFIG=.config ./scripts/kconfig/merge_config.sh -m .config "${frag}"
+          ext="${GITHUB_WORKSPACE}/buildroot-external"
+          defcfg="${ext}/configs/rock5b_defconfig"
+          # Pull the base config + fragment chain straight out of rock5b_defconfig
+          # and substitute $(BR2_EXTERNAL_HAOS_PATH) -> the merged buildroot-external.
+          base="$(sed -nE 's/^BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="(.*)"$/\1/p' "${defcfg}" \
+                  | sed "s#\$(BR2_EXTERNAL_HAOS_PATH)#${ext}#g")"
+          frags="$(sed -nE 's/^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="(.*)"$/\1/p' "${defcfg}" \
+                  | sed "s#\$(BR2_EXTERNAL_HAOS_PATH)#${ext}#g")"
+          echo "base config : ${base}"
+          echo "fragments   : ${frags}"
+          if [ ! -f "${base}" ]; then
+            echo "::error::base kernel config not found: ${base}"
+            exit 1
+          fi
+          for f in ${frags}; do
+            if [ ! -f "${f}" ]; then
+              echo "::error::kernel config fragment not found: ${f}"
+              exit 1
+            fi
+          done
+          # merge_config.sh -m: merge base+fragments into .config WITHOUT auto-olddefconfig
+          KCONFIG_CONFIG=.config ./scripts/kconfig/merge_config.sh -m "${base}" ${frags}
           make olddefconfig
-          echo "ARCH_ROCKCHIP -> $(grep -E '^ARCH_ROCKCHIP=' .config || echo MISSING)"
+          echo "--- resolved key symbols ---"
+          for s in CONFIG_ARCH_ROCKCHIP CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_PLATFORM_SUPPORT \
+                   CONFIG_VIDEO_DEV CONFIG_VIDEO_V4L2 CONFIG_V4L2_MEM2MEM_DEV \
+                   CONFIG_DRM CONFIG_DRM_ROCKCHIP CONFIG_DRM_PANTHOR; do
+            printf '%-34s %s\n' "${s}" "$(grep -E "^${s}=" .config || echo MISSING)"
+          done
 
       - name: Check critical config symbols took effect
         run: |
@@ -110,26 +166,62 @@ jobs:
               fail=1
             fi
           done
-          echo "--- non-critical requested =y symbols that dropped (warnings) ---"
+
+          echo "--- built-in (=y) vendor MPP/RGA vs the V4L2 symbols they link against ---"
+          # The vendor MPP/RGA drivers are built INTO vmlinux (=y). Any V4L2 /
+          # videobuf2 symbol they reference must also be =y; if it is =m (module)
+          # or unset, the vmlinux link dies with undefined references. Flag it as
+          # an annotation BEFORE the long build so the cause is obvious.
+          for s in CONFIG_VIDEO_V4L2 CONFIG_V4L2_MEM2MEM_DEV CONFIG_VIDEOBUF2_CORE \
+                   CONFIG_VIDEOBUF2_V4L2 CONFIG_VIDEOBUF2_MEMOPS CONFIG_VIDEOBUF2_VMALLOC \
+                   CONFIG_VIDEOBUF2_DMA_CONTIG; do
+            v="$(grep -E "^${s}=" .config || echo unset)"
+            case "${v}" in
+              *=y) echo "ok    ${v}" ;;
+              *=m) echo "::warning::${v} is =m but the built-in (=y) MPP/RGA drivers link against it; if the build fails with 'undefined reference', force ${s}=y in board/radxa/rock5b/kernel.config" ;;
+              *)   echo "::warning::${s} is ${v}; built-in MPP/RGA may require it =y" ;;
+            esac
+          done
+
+          echo "--- non-critical requested =y symbols from the board fragment that dropped ---"
           frag="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/kernel.config"
           while IFS= read -r line; do
             case "${line}" in
               CONFIG_*=y)
                 s="${line%%=*}"
                 case " ${crit} " in *" ${s} "*) continue ;; esac
-                grep -q "^${s}=y$" .config || echo "::warning::${s}=y requested but not set (unmet dependency in this approximate base config?)"
+                grep -q "^${s}=y$" .config || echo "::warning::${s}=y requested by board fragment but not set in final .config (unmet dependency?)"
                 ;;
             esac
           done < "${frag}"
           exit "${fail}"
 
-      - name: Build Image + DTBs
+      - name: Build kernel Image + Rock 5B DTBs
         run: |
-          set -euo pipefail
+          set +e
           cd "${LINUX_DIR}"
           j="$(nproc)"; echo "parallel jobs: ${j}"
-          make -j"${j}" Image
-          make -j"${j}" dtbs
+          log="${RUNNER_TEMP}/build.log"
+          : > "${log}"
+          # tee streams live to the job log AND the artifact; PIPESTATUS[0] is make's
+          # exit code (errexit is off, so a failing make does not abort the step here).
+          make -j"${j}" Image 2>&1 | tee -a "${log}"
+          rc_img=${PIPESTATUS[0]}
+          make -j"${j}" dtbs  2>&1 | tee -a "${log}"
+          rc_dtb=${PIPESTATUS[0]}
+          if [ "${rc_img}" -ne 0 ] || [ "${rc_dtb}" -ne 0 ]; then
+            echo "::error::Kernel build FAILED (Image rc=${rc_img}, dtbs rc=${rc_dtb}). Real compiler errors are re-emitted below as annotations and kept in the build-log artifact."
+            if grep -qE 'error:|Error [0-9]+|\*\*\* |undefined reference|No rule to make target|No such file or directory' "${log}"; then
+              grep -nE 'error:|Error [0-9]+|\*\*\* |undefined reference|No rule to make target|No such file or directory' "${log}" \
+                | head -n 50 | while IFS= read -r l; do echo "::error::${l}"; done
+            else
+              tail -n 40 "${log}" | while IFS= read -r l; do echo "::error::${l}"; done
+            fi
+            echo "===== build.log tail (150 lines) ====="
+            tail -n 150 "${log}"
+            exit 1
+          fi
+          echo "Image + Rock 5B DTBs built OK"
 
       - name: Assert Rock 5B artifacts
         run: |
@@ -144,11 +236,13 @@ jobs:
           ls -la "${dtb}"
           echo "Rock 5B kernel + DTB built OK"
 
-      - name: Upload resolved .config (for debugging)
+      - name: Upload resolved .config + build log (for debugging)
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rock5b-verify-dotconfig
-          path: ${{ env.LINUX_DIR }}/.config
+          name: rock5b-verify-logs
+          path: |
+            ${{ env.LINUX_DIR }}/.config
+            ${{ runner.temp }}/build.log
           retention-days: 7
           if-no-files-found: ignore
