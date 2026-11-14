@@ -1,0 +1,9 @@
+config BR2_PACKAGE_ROCKCHIP_MPP
+	bool "rockchip-mpp"
+	select BR2_PACKAGE_LIBDRM
+	help
+	  Rockchip Media Process Platform (MPP) userspace library
+	  (librockchip_mpp). Talks to the kernel /dev/mpp_service driver
+	  for RK3588 hardware video encode/decode (VEPU580/VDPU381/AV1).
+
+	  https://github.com/rockchip-linux/mpp

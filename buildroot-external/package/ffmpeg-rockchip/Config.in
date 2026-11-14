@@ -1,0 +1,17 @@
+config BR2_PACKAGE_FFMPEG_ROCKCHIP
+	bool "ffmpeg-rockchip"
+	depends on !BR2_PACKAGE_FFMPEG
+	select BR2_PACKAGE_ROCKCHIP_MPP
+	select BR2_PACKAGE_LIBRGA
+	select BR2_PACKAGE_LIBDRM
+	help
+	  Rockchip-patched FFmpeg (nyanmisaka fork) with native RKMPP
+	  codecs (h264_rkmpp/hevc_rkmpp/...), DRM PRIME zero-copy and
+	  RGA-accelerated scaling/format conversion. Requires the kernel
+	  MPP/RGA drivers and librockchip_mpp/librga.
+
+	  Mutually exclusive with the stock Buildroot ffmpeg package: both
+	  install /usr/bin/ffmpeg and libav*.so, so they cannot coexist.
+	  (HAOS base images ship no ffmpeg, so this is the only one.)
+
+	  https://github.com/nyanmisaka/ffmpeg-rockchip

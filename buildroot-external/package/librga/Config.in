@@ -1,0 +1,9 @@
+config BR2_PACKAGE_LIBRGA
+	bool "librga"
+	select BR2_PACKAGE_LIBDRM
+	help
+	  Rockchip Raster Graphic Acceleration (RGA) userspace library.
+	  Drives RGA2/RGA3 2D acceleration (blit/scale/convert/csc) via
+	  /dev/rga. Used by ffmpeg-rockchip and the VA-API bridge.
+
+	  https://github.com/airockchip/librga

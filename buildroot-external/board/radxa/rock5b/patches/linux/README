@@ -1,0 +1,63 @@
+# Rock 5B (RK3588) kernel patches
+
+Buildroot applies every `*.patch` here to the kernel pinned by
+`configs/rock5b_defconfig` (`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18"`),
+in lexical order: 0001 → 0002 → 0003.
+
+## 0001-rk3588-vendor-mpp-rga-drivers.patch  (~1 MB)
+## 0002-rk3588-vendor-mpp-rga-dt.patch        (~15 KB)
+
+The Rockchip vendor MPP codec (`rk_vcodec`: RKVENC2/VEPU580 encoder + RKVDEC2/
+VDPU381 decoder + CCU) and RGA (`multi_rga`: RGA3 x2 + RGA2) drivers forward
+ported to mainline 6.18, plus their RK3588 device-tree nodes and the Rock 5B
+board `status = "okay"` enables.
+
+Sourced verbatim from `yisding/rock-5b-ysp`:
+
+    kernel-drivers/patches/rk3588-rkvenc2-01-vcodec-rga-drivers.patch
+    kernel-drivers/patches/rk3588-rkvenc2-02-vcodec-rga-dt.patch
+
+Both are generated against **pristine mainline v6.18** (`git am` anchor tip
+`5614909e5803`), which is exactly why the kernel is pinned to `6.18` rather
+than a later stable point release. The driver code is Rockchip vendor code
+under GPL-2.0, forward-ported by ysp; see that repo's `LICENSE.md` for
+provenance. They are vendored here as plain text (not Git LFS).
+
+The matching `CONFIG_*` symbols are enabled in `../../kernel.config`
+(`CONFIG_ROCKCHIP_MPP_SERVICE/RKVENC2/RKVDEC2/PROC_FS`,
+`CONFIG_ROCKCHIP_MULTI_RGA/RGA_ASYNC/RGA_DEBUG_FS`). We use the **in-tree**
+forward-port form (drivers built `=y`), matching ysp's "combined kernel". ysp's
+DKMS out-of-tree variant is mutually exclusive with that (module exports clash
+with vmlinux) and is **not** used here.
+
+The userspace counterparts (`librockchip_mpp`, `librga`) and `ffmpeg-rockchip`
+are separate Buildroot packages under `package/`.
+
+## 0003-rock5b-pwm-fan.patch
+
+Board patch (ours). Enables `pwm1` and adds a `pwm-fan` cooling device
+(pwm1 ch0 / pin pwm1_m0 / GPIO0_C0, 50000 ns period) bound to the
+`bigcore0`/`bigcore2`/`little-core` thermal zones via active trips +
+cooling-maps, so the kernel drives the Rock 5B fan with no userspace daemon.
+`cooling-levels` and trip temperatures follow Radxa's reference fan curve and
+should be tuned on real hardware. Requires `CONFIG_SENSORS_PWM_FAN` (enabled in
+`../../kernel.config`). The pwm1 node and its pinctrl already exist in
+`rk3588-base.dtsi`, and the board dtsi (`rk3588-rock-5b-5bp-5t.dtsi`) already
+sets `&pwm1 { status = "okay"; }` — so this patch's pwm1 flip is a harmless
+re-assert; its real job is adding the fan node + cooling wiring to the
+top-level `rk3588-rock-5b.dts` (a file 0002 does not touch).
+
+## RKNPU note
+
+The NPU driver is **not** forward-ported by ysp; it is built out-of-tree from
+`package/rknpu` (lurenJBD `rk3588-rknn-core`, mainline binding). **No DT patch
+is needed here.** Mainline v6.18 `rk3588-base.dtsi` already defines
+`rknn_core_0/1/2` (`npu@fdab0000`/`fdac0000`/`fdad0000`,
+`compatible = "rockchip,rk3588-rknn-core"`) plus `rknn_mmu_0/1/2`, and the Rock
+5B board DT (`rk3588-rock-5b-5bp-5t.dtsi`) already flips all six to
+`status = "okay"` with `npu-supply`/`sram-supply` wired to `vdd_npu_s0`. The
+out-of-tree module's `of_match` (`rockchip,rk3588-rknn-core`) binds to those
+enabled nodes when `rknpu.ko` loads. Its kernel prerequisites are already set in
+`../../kernel.config`: `MODULES`, `PM_DEVFREQ` + `DEVFREQ_GOV_SIMPLE_ONDEMAND`
+(200-800 MHz DVFS), `IOMMU`/`ROCKCHIP_IOMMU` (per-core `rknn_mmu`),
+`ARM_SCMI_PROTOCOL` (`SCMI_CLK_NPU`), and `DMA_CMA`/`DMABUF_HEAPS`.

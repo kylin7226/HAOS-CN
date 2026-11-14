@@ -1,0 +1,29 @@
+# rknpu — device tree requirement (IMPORTANT)
+
+This driver binds to the DT compatible **`rockchip,rk3588-rknn-core`** with a
+three-core layout (NPU power domains 9/10/11, per-core IOMMU groups, all fed
+from `vdd_npu_s0`, 200–800 MHz devfreq).
+
+Stock mainline `rk3588-rock-5b.dts` / `rk3588s.dtsi` (v6.18) do **NOT** contain
+this node, so the module will build but **not probe** until the node exists.
+
+You must supply the matching DT, one of:
+
+1. A DT **overlay** (`rk3588-rknn-core.dtso`) applied at boot. The board boot
+   script (`board/radxa/rock5b/uboot-boot.ush`) already loads overlays listed
+   in the `overlays` env var from `overlays/<name>.dtbo` on the boot partition;
+   set `overlays=rk3588-rknn-core` in `haos-config.txt`.
+2. A kernel **DT patch** under `board/radxa/rock5b/patches/linux/` adding the
+   node to `rk3588-rock-5b.dts`.
+
+Source of truth for the node contents: the platform this driver was validated
+on (Armbian mainline `rockchip64` RK3588 DT) and the BSP `rk3588s.dtsi` NPU
+nodes — do not invent register/clock/iommu values. Reference:
+`lurenJBD/rk3588-rknn-core` docs/compatibility.md.
+
+Runtime pairing: `librknnrt` v2.3.2 (BR2_PACKAGE_LIBRKNNRT), which this
+package selects. Verify after boot:
+
+    modinfo rknpu ; dmesg | grep -i rknpu
+    ls /dev/rknpu*
+    cat /sys/class/devfreq/fdab0000.npu/cur_freq

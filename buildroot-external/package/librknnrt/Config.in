@@ -1,0 +1,8 @@
+config BR2_PACKAGE_LIBRKNNRT
+	bool "librknnrt"
+	help
+	  Rockchip RKNN runtime (librknnrt.so) for the RK3588 NPU.
+	  Prebuilt aarch64 library plus C API headers from airockchip
+	  rknn-toolkit2. Requires the rknpu kernel driver (/dev/rknpu).
+
+	  https://github.com/airockchip/rknn-toolkit2
