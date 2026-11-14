@@ -5,36 +5,46 @@
 # Pinned to RKNN-Toolkit2 v2.3.2, the runtime validated against the mainline
 # rknpu driver (see lurenJBD/rk3588-rknn-core docs/compatibility.md).
 #
+# The rknn-toolkit2 repository tarball is ~1.6 GB (models, demo, toolkit, every
+# arch). Downloading it exhausted the CI runner: wget saved the archive to a
+# temp dir but it never reached DL_DIR, so extract died with "Cannot open
+# .../librknnrt-<ver>.tar.gz". Only the 7.7 MB aarch64 runtime, its three
+# headers and the license are needed, so fetch those five files directly
+# (~8 MB total) and rebuild the aarch64/ + include/ layout the install steps
+# expect. SOURCE is pulled from SITE; the rest come via EXTRA_DOWNLOADS (each
+# lands in DL_DIR under its basename).
+#
 ################################################################################
 
 LIBRKNNRT_VERSION = v2.3.2
-LIBRKNNRT_SITE = $(call github,airockchip,rknn-toolkit2,$(LIBRKNNRT_VERSION))
+LIBRKNNRT_API_DIR = rknpu2/runtime/Linux/librknn_api
+LIBRKNNRT_RAW = https://raw.githubusercontent.com/airockchip/rknn-toolkit2/$(LIBRKNNRT_VERSION)
+
+LIBRKNNRT_SITE = $(LIBRKNNRT_RAW)/$(LIBRKNNRT_API_DIR)/aarch64
+LIBRKNNRT_SOURCE = librknnrt.so
+LIBRKNNRT_EXTRA_DOWNLOADS = \
+	$(LIBRKNNRT_RAW)/$(LIBRKNNRT_API_DIR)/include/rknn_api.h \
+	$(LIBRKNNRT_RAW)/$(LIBRKNNRT_API_DIR)/include/rknn_custom_op.h \
+	$(LIBRKNNRT_RAW)/$(LIBRKNNRT_API_DIR)/include/rknn_matmul_api.h \
+	$(LIBRKNNRT_RAW)/LICENSE
+
 LIBRKNNRT_LICENSE = PROPRIETARY
 LIBRKNNRT_LICENSE_FILES = LICENSE
 LIBRKNNRT_INSTALL_STAGING = YES
 
-LIBRKNNRT_API_DIR = rknpu2/runtime/Linux/librknn_api
-
-# The rknn-toolkit2 repository tarball is ~1.6 GB (models, docs, other targets);
-# only the aarch64 runtime library, its headers and the license are needed.
-#
-# The GitHub archive wraps everything in a top-level dir (rknn-toolkit2-<ver>), and
-# Buildroot matches EXTRACT_ONLY against the STORED member names with tar's default
-# --no-wildcards, so bare paths like "rknpu2/..." select nothing and "include/*" is
-# taken literally. Override the extract instead: a leading */ matches the top dir,
-# --wildcards enables the include/* glob, and --strip-components=1 removes the top
-# dir exactly like Buildroot's default extract.
-LIBRKNNRT_EXTRACT_CMDS = \
-	$(TAR) -x --strip-components=1 --wildcards --no-wildcards-match-slash \
-		-C $(@D) \
-		-f $(DL_DIR)/$(LIBRKNNRT_SOURCE) \
-		'*/$(LIBRKNNRT_API_DIR)/aarch64/librknnrt.so' \
-		'*/$(LIBRKNNRT_API_DIR)/include/*' \
-		'*/LICENSE'
+define LIBRKNNRT_EXTRACT_CMDS
+	mkdir -p $(@D)/$(LIBRKNNRT_API_DIR)/aarch64 \
+		$(@D)/$(LIBRKNNRT_API_DIR)/include
+	cp -f $(DL_DIR)/librknnrt.so $(@D)/$(LIBRKNNRT_API_DIR)/aarch64/
+	cp -f $(DL_DIR)/rknn_api.h $(DL_DIR)/rknn_custom_op.h \
+		$(DL_DIR)/rknn_matmul_api.h $(@D)/$(LIBRKNNRT_API_DIR)/include/
+	cp -f $(DL_DIR)/LICENSE $(@D)/
+endef
 
 define LIBRKNNRT_INSTALL_STAGING_CMDS
 	$(INSTALL) -D -m 0644 $(@D)/$(LIBRKNNRT_API_DIR)/aarch64/librknnrt.so \
 		$(STAGING_DIR)/usr/lib/librknnrt.so
+	mkdir -p $(STAGING_DIR)/usr/include
 	cp -dpR $(@D)/$(LIBRKNNRT_API_DIR)/include/. $(STAGING_DIR)/usr/include/
 endef
 

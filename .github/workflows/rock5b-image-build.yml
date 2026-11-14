@@ -69,7 +69,7 @@ env:
 
 jobs:
   build:
-    name: Rock 5B image (${{ inputs.stage || 'config' }})
+    name: Rock 5B image (${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }})
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
