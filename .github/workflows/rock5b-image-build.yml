@@ -88,7 +88,13 @@ jobs:
         run: |
           set -euo pipefail
           df -h
-          sudo rm -rf /usr/local/lib/android/sdk /opt/hostedtoolcache/CodeQL
+          # The full stage assembles the rootfs plus a ~2 GB disk image and its xz on
+          # top of the whole Buildroot output tree -- the peak-disk stage -- so reclaim
+          # as much as possible. None of these are used by the containerised HAOS
+          # build. Swap is deliberately left enabled: disabling it to reclaim
+          # /swapfile would risk OOM during the multi-hour build.
+          sudo rm -rf /usr/local/lib/android/sdk /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet /usr/local/share/boost
           sudo mkdir -p /mnt/cache /mnt/output
           owner="$(stat -c '%U:%G' "${GITHUB_WORKSPACE}")"
           sudo chown -R "${owner}" /mnt/cache /mnt/output
