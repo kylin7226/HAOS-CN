@@ -4,11 +4,11 @@ name: Rock 5B kernel verify
 # It deliberately does NOT use the private desmond-dong/haos-cn-scripts repo or
 # any secret, so it can run on a fork. It validates the highest-risk parts of the
 # port against pristine mainline v6.18 (the version configs/rock5b_defconfig pins):
-#   1. the vendored ysp MPP/RGA patches + the pwm-fan patch apply cleanly,
+#   1. the vendored ysp MPP/RGA patches apply cleanly,
 #   2. the kernel .config resolves exactly like the real HAOS build (see below),
 #   3. the kernel + the in-tree vendor drivers (MPP/RGA/Panthor/pwm-fan) build,
 #   4. the Rock 5B device tree compiles (rk3588-rock-5b.dtb), which exercises the
-#      rknpu / pwm-fan / MPP-RGA DT nodes.
+#      rknpu / pwm-fan (both mainline) and vendor MPP-RGA DT nodes.
 #
 # CONFIG FIDELITY: the kernel is configured the way Buildroot does it, not from a
 # generic defconfig. configs/rock5b_defconfig uses
@@ -217,8 +217,9 @@ jobs:
           rc_dtb=${PIPESTATUS[0]}
           if [ "${rc_img}" -ne 0 ] || [ "${rc_dtb}" -ne 0 ]; then
             echo "::error::Kernel build FAILED (Image rc=${rc_img}, dtbs rc=${rc_dtb}). Real compiler errors are re-emitted below as annotations and kept in the build-log artifact."
-            if grep -qE 'error:|Error [0-9]+|\*\*\* |undefined reference|No rule to make target|No such file or directory' "${log}"; then
-              grep -nE 'error:|Error [0-9]+|\*\*\* |undefined reference|No rule to make target|No such file or directory' "${log}" \
+            pat='[Ee]rror:|ERROR|FATAL|Error [0-9]+|\*\*\* |undefined reference|No rule to make target|No such file or directory'
+            if grep -qE "${pat}" "${log}"; then
+              grep -nE "${pat}" "${log}" \
                 | head -n 50 | while IFS= read -r l; do echo "::error::${l}"; done
             else
               tail -n 40 "${log}" | while IFS= read -r l; do echo "::error::${l}"; done

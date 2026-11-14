@@ -2,7 +2,7 @@
 
 Buildroot applies every `*.patch` here to the kernel pinned by
 `configs/rock5b_defconfig` (`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18"`),
-in lexical order: 0001 → 0002 → 0003.
+in lexical order: 0001 → 0002.
 
 ## 0001-rk3588-vendor-mpp-rga-drivers.patch  (~1 MB)
 ## 0002-rk3588-vendor-mpp-rga-dt.patch        (~15 KB)
@@ -33,19 +33,14 @@ with vmlinux) and is **not** used here.
 The userspace counterparts (`librockchip_mpp`, `librga`) and `ffmpeg-rockchip`
 are separate Buildroot packages under `package/`.
 
-## 0003-rock5b-pwm-fan.patch
+## Fan note
 
-Board patch (ours). Enables `pwm1` and adds a `pwm-fan` cooling device
-(pwm1 ch0 / pin pwm1_m0 / GPIO0_C0, 50000 ns period) bound to the
-`bigcore0`/`bigcore2`/`little-core` thermal zones via active trips +
-cooling-maps, so the kernel drives the Rock 5B fan with no userspace daemon.
-`cooling-levels` and trip temperatures follow Radxa's reference fan curve and
-should be tuned on real hardware. Requires `CONFIG_SENSORS_PWM_FAN` (enabled in
-`../../kernel.config`). The pwm1 node and its pinctrl already exist in
-`rk3588-base.dtsi`, and the board dtsi (`rk3588-rock-5b-5bp-5t.dtsi`) already
-sets `&pwm1 { status = "okay"; }` — so this patch's pwm1 flip is a harmless
-re-assert; its real job is adding the fan node + cooling wiring to the
-top-level `rk3588-rock-5b.dts` (a file 0002 does not touch).
+No fan patch is needed. Mainline v6.18 `rk3588-rock-5b-5bp-5t.dtsi` already
+defines `fan: pwm-fan` (pwm1 ch0, 50000 ns, `cooling-levels = <0 120 150 180
+210 240 255>`, `fan-supply = <&vcc5v0_sys>`) and wires it into `package_thermal`
+with active trips at 55 °C / 65 °C (1 s polling). `CONFIG_SENSORS_PWM_FAN` and
+the thermal symbols in `../../kernel.config` make it functional. To retune the
+curve on real hardware, add a small patch overriding `&package_thermal` trips.
 
 ## RKNPU note
 
