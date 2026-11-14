@@ -62,7 +62,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write   # publish the image to the fixed rock5b-dev release tag
 
 env:
   UPSTREAM_REPO: https://github.com/home-assistant/operating-system.git
@@ -269,12 +269,28 @@ jobs:
           set -euo pipefail
           ls -la /mnt/output/images/
           cd /mnt/output/images/
-          if ! compgen -G 'haos_*' > /dev/null; then
-            echo "::error::no haos_* image was produced in output/images"
+          if ! compgen -G 'haos_rock5b-*.img.xz' > /dev/null; then
+            echo "::error::no haos_rock5b-*.img.xz was produced in output/images (the board hook runs convert_disk_image_xz)"
             exit 1
           fi
-          sha256sum haos_* > SHA256SUMS.rock5b
+          sha256sum haos_rock5b-*.img.xz > SHA256SUMS.rock5b
           cat SHA256SUMS.rock5b
+          du -h haos_rock5b-*.img.xz
+
+      - name: Publish the image to the rock5b-dev release
+        if: env.STAGE == 'full'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rock5b-dev
+          name: Rock 5B (RK3588) development images
+          body: |
+            Self-signed development images for the Radxa Rock 5B, built by the
+            `Rock 5B image build` workflow from branch `${{ github.ref_name }}`
+            (commit `${{ github.sha }}`). Not OTA-updatable to a signed release.
+          prerelease: true
+          files: |
+            /mnt/output/images/haos_rock5b-*.img.xz
+            /mnt/output/images/SHA256SUMS.rock5b
 
       - name: Upload image artifact
         if: env.STAGE == 'full'
@@ -282,7 +298,8 @@ jobs:
         with:
           name: haos_rock5b-image
           path: |
-            /mnt/output/images/haos_*
+            /mnt/output/images/haos_rock5b-*.img.xz
+            /mnt/output/images/SHA256SUMS.rock5b
           retention-days: 7
           if-no-files-found: error
 
