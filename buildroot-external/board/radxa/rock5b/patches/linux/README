@@ -2,7 +2,7 @@
 
 Buildroot applies every `*.patch` here to the kernel pinned by
 `configs/rock5b_defconfig` (`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18"`),
-in lexical order: 0001 → 0002.
+in lexical order: 0001 → 0002 → 0003.
 
 ## 0001-rk3588-vendor-mpp-rga-drivers.patch  (~1 MB)
 ## 0002-rk3588-vendor-mpp-rga-dt.patch        (~15 KB)
@@ -32,6 +32,16 @@ with vmlinux) and is **not** used here.
 
 The userspace counterparts (`librockchip_mpp`, `librga`) and `ffmpeg-rockchip`
 are separate Buildroot packages under `package/`.
+
+## 0003-rk3588-backport-vdpu381-vdec-nodes.patch
+
+0002's Rock 5B board hunk converts the `vdec0`/`vdec1` decoder nodes (plus
+`vdec0_mmu`/`vdec1_mmu` and the `vdec0_sram`/`vdec1_sram` RCB pools) *in place*
+to the vendor rkvdec2 binding. Those nodes only landed in mainline **v7.0**;
+ysp's tree got them from Armbian's media patch, so on pristine v6.18 dtc fails
+with `Label or path vdec0 not found`. 0003 backports them verbatim from v7.0
+`rk3588-base.dtsi`. It is generated on top of 0002, so it must apply after it.
+Drop it when the kernel moves to >= v7.0.
 
 ## Fan note
 
