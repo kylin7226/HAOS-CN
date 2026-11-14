@@ -57,7 +57,9 @@ is needed here.** Mainline v6.18 `rk3588-base.dtsi` already defines
 5B board DT (`rk3588-rock-5b-5bp-5t.dtsi`) already flips all six to
 `status = "okay"` with `npu-supply`/`sram-supply` wired to `vdd_npu_s0`. The
 out-of-tree module's `of_match` (`rockchip,rk3588-rknn-core`) binds to those
-enabled nodes when `rknpu.ko` loads. Its kernel prerequisites are already set in
+enabled nodes when `rknpu.ko` loads. These nodes are also the binding of
+mainline's own NPU driver Rocket (`CONFIG_DRM_ACCEL_ROCKET`, new in 6.18), so
+`../../kernel.config` explicitly disables Rocket. Its kernel prerequisites are already set in
 `../../kernel.config`: `MODULES`, `PM_DEVFREQ` + `DEVFREQ_GOV_SIMPLE_ONDEMAND`
 (200-800 MHz DVFS), `IOMMU`/`ROCKCHIP_IOMMU` (per-core `rknn_mmu`),
 `ARM_SCMI_PROTOCOL` (`SCMI_CLK_NPU`), and `DMA_CMA`/`DMABUF_HEAPS`.

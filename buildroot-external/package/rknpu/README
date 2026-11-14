@@ -1,25 +1,20 @@
-# rknpu — device tree requirement (IMPORTANT)
+# rknpu — device tree and driver notes
 
 This driver binds to the DT compatible **`rockchip,rk3588-rknn-core`** with a
-three-core layout (NPU power domains 9/10/11, per-core IOMMU groups, all fed
+three-core layout (NPU power domains NPUTOP/NPU1/NPU2, per-core IOMMUs, all fed
 from `vdd_npu_s0`, 200–800 MHz devfreq).
 
-Stock mainline `rk3588-rock-5b.dts` / `rk3588s.dtsi` (v6.18) do **NOT** contain
-this node, so the module will build but **not probe** until the node exists.
+No DT patch or overlay is needed. Mainline v6.18 `rk3588-base.dtsi` defines
+`rknn_core_0/1/2` (`npu@fdab0000` / `fdac0000` / `fdad0000`) and
+`rknn_mmu_0/1/2`, and the Rock 5B board DT (`rk3588-rock-5b-5bp-5t.dtsi`)
+already sets all six to `status = "okay"` with `npu-supply`/`sram-supply`
+wired to `vdd_npu_s0`.
 
-You must supply the matching DT, one of:
-
-1. A DT **overlay** (`rk3588-rknn-core.dtso`) applied at boot. The board boot
-   script (`board/radxa/rock5b/uboot-boot.ush`) already loads overlays listed
-   in the `overlays` env var from `overlays/<name>.dtbo` on the boot partition;
-   set `overlays=rk3588-rknn-core` in `haos-config.txt`.
-2. A kernel **DT patch** under `board/radxa/rock5b/patches/linux/` adding the
-   node to `rk3588-rock-5b.dts`.
-
-Source of truth for the node contents: the platform this driver was validated
-on (Armbian mainline `rockchip64` RK3588 DT) and the BSP `rk3588s.dtsi` NPU
-nodes — do not invent register/clock/iommu values. Reference:
-`lurenJBD/rk3588-rknn-core` docs/compatibility.md.
+Those nodes are the binding of mainline's own NPU driver, **Rocket**
+(`drivers/accel/rocket`, `CONFIG_DRM_ACCEL_ROCKET`, Mesa userspace). Rocket and
+this driver claim the same nodes, so only one may be enabled;
+`board/radxa/rock5b/kernel.config` explicitly disables Rocket so `rknpu.ko`
+(RKNN toolkit compatible) owns the NPU.
 
 Runtime pairing: `librknnrt` v2.3.2 (BR2_PACKAGE_LIBRKNNRT), which this
 package selects. Verify after boot:

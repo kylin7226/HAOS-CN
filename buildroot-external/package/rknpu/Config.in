@@ -1,14 +1,18 @@
 config BR2_PACKAGE_RKNPU
-	tristate "rknpu (Rockchip RK3588 NPU, mainline)"
+	bool "rknpu (Rockchip RK3588 NPU, mainline)"
 	depends on BR2_LINUX_KERNEL
-	select BR2_PACKAGE_LIBRKNNRT if BR2_PACKAGE_RKNPU
+	depends on BR2_aarch64
+	depends on BR2_INSTALL_LIBSTDCPP # librknnrt
+	depends on BR2_TOOLCHAIN_USES_GLIBC # librknnrt
+	select BR2_PACKAGE_LIBRKNNRT
 	help
 	  Clean-room out-of-tree RKNPU kernel driver for RK3588 that
 	  builds directly against mainline Linux (validated on 6.18/7.x).
 	  Provides /dev/rknpu, 3-core concurrency, 800MHz devfreq and
 	  per-core IOMMU isolation. Pairs with the librknnrt runtime.
 
-	  Requires the mainline DT node "rockchip,rk3588-rknn-core" to be
-	  present/enabled for the board (see board/radxa/rock5b notes).
+	  Binds the mainline "rockchip,rk3588-rknn-core" DT nodes, which
+	  the Rock 5B board DT already enables. The in-tree Rocket driver
+	  (CONFIG_DRM_ACCEL_ROCKET) binds the same nodes and must stay off.
 
 	  https://github.com/lurenJBD/rk3588-rknn-core

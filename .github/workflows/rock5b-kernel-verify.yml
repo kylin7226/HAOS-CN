@@ -166,6 +166,12 @@ jobs:
               fail=1
             fi
           done
+          if grep -qE '^CONFIG_DRM_ACCEL_ROCKET=(y|m)$' .config; then
+            echo "::error::CONFIG_DRM_ACCEL_ROCKET is enabled; it binds the same rknn-core DT nodes as rknpu.ko"
+            fail=1
+          else
+            echo "ok    CONFIG_DRM_ACCEL_ROCKET off (rknpu.ko owns the NPU)"
+          fi
 
           echo "--- built-in (=y) vendor MPP/RGA vs the V4L2 symbols they link against ---"
           # The vendor MPP/RGA drivers are built INTO vmlinux (=y). Any V4L2 /

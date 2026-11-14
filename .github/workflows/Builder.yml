@@ -159,6 +159,18 @@ jobs:
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
           RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
 
+      - name: Register Rock 5B packages in Config.in
+        run: |
+          # Upstream Config.in only sources upstream packages; without this the
+          # rock5b_defconfig BR2_PACKAGE_* symbols are silently dropped. Guarded so
+          # anything the private script already registered is not duplicated.
+          cfg=operating-system/buildroot-external/Config.in
+          for p in rockchip-mpp librga librknnrt rknpu ffmpeg-rockchip; do
+            grep -qF "package/${p}/Config.in" "${cfg}" || \
+              printf 'source "$BR2_EXTERNAL_HAOS_PATH/package/%s/Config.in"\n' "${p}" >> "${cfg}"
+          done
+          grep -n 'source' "${cfg}"
+
       - name: Restore ccache
         uses: actions/cache/restore@v6
         with:
