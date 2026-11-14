@@ -1,0 +1,4 @@
+# https://github.com/airockchip/rknn-toolkit2/archive/refs/tags/v2.3.2.tar.gz
+sha256  fa297b4ef8111372b3853ff6c29c520a12242708fb431a0989d8b82cc479233b  rknn-toolkit2-2.3.2.tar.gz
+# Locally computed from the release tarball
+sha256  d846f57d942c7dfdca7b8b54f9e8bb39e1e226790dc4f5ee205d6fd678961720  LICENSE

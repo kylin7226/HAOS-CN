@@ -4,7 +4,9 @@
 #
 ################################################################################
 
-ROCKCHIP_MPP_VERSION = 9b56348cc61393c84662e6d6dd78feae67773a36
+# Release 1.1.0 (upstream's latest tag); its pkgconfig reports Version 1.3.10,
+# which is what ffmpeg-rockchip checks for (rockchip_mpp >= 1.3.9).
+ROCKCHIP_MPP_VERSION = 1.1.0
 ROCKCHIP_MPP_SITE = $(call github,rockchip-linux,mpp,$(ROCKCHIP_MPP_VERSION))
 ROCKCHIP_MPP_LICENSE = Apache-2.0
 ROCKCHIP_MPP_LICENSE_FILES = LICENSES/Apache-2.0

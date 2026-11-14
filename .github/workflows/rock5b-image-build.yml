@@ -1,0 +1,260 @@
+name: Rock 5B image build
+
+# Self-contained HAOS image build for the Radxa Rock 5B (RK3588), so the fork can
+# produce flashable images without the private desmond-dong/haos-cn-scripts repo
+# or any secret. It follows upstream home-assistant/operating-system's own build
+# flow (.github/workflows/build.yaml): assemble the build tree, build the
+# haos-builder container locally from upstream's Dockerfile, then run Buildroot
+# inside it with --privileged (loop devices are needed for the data partition).
+#
+# STAGES (workflow_dispatch input, so the port can be validated step by step):
+#   config      assemble + `make rock5b_defconfig` + audit the resolved .config
+#               (minutes; catches missing package registrations, dropped symbols,
+#               bad .hash files and fragment problems before paying for a build)
+#   full        everything above, then the complete image + linux-check-dotconfig
+#               + image upload (hours on a standard 2-core runner)
+#
+# A push to rock5b-port always runs the cheap `config` stage, so regressions in
+# the external tree are caught without burning hours.
+#
+# The CN-specific bits that haos.sh normally injects are not needed for rock5b:
+# this tree ships its own Config.in / external.mk / external.desc, and the only
+# defconfig symbol it cannot resolve is BR2_PACKAGE_RTL8821CU (a private HAOS-CN
+# package); it is reported as a warning instead of failing the build.
+#
+# DEBUG WITHOUT A TOKEN: fork job logs need admin rights, but check-run
+# annotations do not, so every failure path re-emits the real cause as ::error::.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Build stage'
+        required: true
+        type: choice
+        default: config
+        options:
+          - config
+          - full
+      upstream_ref:
+        description: 'home-assistant/operating-system ref to build against'
+        required: true
+        default: '18.5'
+  push:
+    branches: [rock5b-port]
+    paths:
+      - 'buildroot-external/**'
+      - '.github/workflows/rock5b-image-build.yml'
+
+concurrency:
+  group: rock5b-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/home-assistant/operating-system.git
+
+jobs:
+  build:
+    name: Rock 5B image (${{ inputs.stage || 'config' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      STAGE: ${{ inputs.stage || 'config' }}
+      UPSTREAM_REF: ${{ inputs.upstream_ref || '18.5' }}
+      RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
+      RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+    steps:
+      - name: Checkout HAOS-CN
+        uses: actions/checkout@v7
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/local/lib/android/sdk /opt/hostedtoolcache/CodeQL
+          sudo mkdir -p /mnt/cache /mnt/output
+          owner="$(stat -c '%U:%G' "${GITHUB_WORKSPACE}")"
+          sudo chown -R "${owner}" /mnt/cache /mnt/output
+          df -h
+
+      - name: Assemble the build tree
+        run: |
+          set -euo pipefail
+          # Upstream provides the buildroot submodule, scripts/, ota/, meta and the
+          # upstream packages; this fork overlays its buildroot-external on top,
+          # exactly like HAOS-CN's Builder.yml does (cp -r buildroot-external ...).
+          git clone --quiet --depth 1 --branch "${UPSTREAM_REF}" "${UPSTREAM_REPO}" os-up
+          git -C os-up submodule update --init --depth 1
+          cp -a buildroot-external/. os-up/buildroot-external/
+          for f in external.desc external.mk Config.in scripts/post-image.sh \
+                   configs/rock5b_defconfig kernel/v6.18.y/kernel-arm64-rockchip.config \
+                   board/radxa/rock5b/meta Dockerfile; do
+            test -f "os-up/buildroot-external/${f}" 2>/dev/null || test -f "os-up/${f}" || {
+              echo "::error::build tree is missing ${f}"; exit 1; }
+          done
+          echo "BUILD_TREE=${GITHUB_WORKSPACE}/os-up" >> "${GITHUB_ENV}"
+
+      - name: Set development version suffix
+        run: |
+          set -euo pipefail
+          cd "${BUILD_TREE}"
+          version_dev="dev$(date --utc +'%Y%m%d')"
+          sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${version_dev}\2/" buildroot-external/meta
+          grep '^VERSION' buildroot-external/meta
+
+      - name: Generate RAUC signing key
+        run: |
+          set -euo pipefail
+          cd "${BUILD_TREE}"
+          if [ -n "${RAUC_CERTIFICATE}" ] && [ -n "${RAUC_PRIVATE_KEY}" ]; then
+            echo "Using the RAUC secrets from the repository settings."
+            printf -- '-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' \
+              "${RAUC_CERTIFICATE}" > cert.pem
+            printf -- '-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n' \
+              "${RAUC_PRIVATE_KEY}" > key.pem
+          else
+            echo "::warning::No RAUC_CERTIFICATE/RAUC_PRIVATE_KEY secrets; building with a public self-signed certificate (this image cannot OTA-update to a signed release)."
+            buildroot-external/scripts/generate-signing-key.sh cert.pem key.pem
+          fi
+          test -s cert.pem && test -s key.pem
+
+      - name: Build the haos-builder container image
+        run: |
+          set -euo pipefail
+          cd "${BUILD_TREE}"
+          docker build -t haos-builder:local . > /tmp/docker-build.log 2>&1 || {
+            echo "::error::haos-builder image build failed:"; tail -n 40 /tmp/docker-build.log; exit 1; }
+          tail -n 5 /tmp/docker-build.log
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: /mnt/cache/cc
+          key: haos-cc-rock5b
+          restore-keys: haos-cc-rock5b-
+
+      - name: Generate build config (make rock5b_defconfig)
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
+            -v "${BUILD_TREE}:/build" -v /mnt/cache:/cache -v /mnt/output:/build/output \
+            haos-builder:local make rock5b_defconfig
+          test -f /mnt/output/.config
+
+      - name: Audit the resolved Buildroot config
+        run: |
+          set -uo pipefail
+          cfg=/mnt/output/.config
+          fail=0
+          echo "--- board / image plumbing ---"
+          for s in BR2_aarch64 BR2_LINUX_KERNEL BR2_PACKAGE_HOST_GENIMAGE BR2_TARGET_UBOOT \
+                   BR2_PACKAGE_ROCKCHIP_BLOBS BR2_PACKAGE_HASSIO BR2_PACKAGE_OS_AGENT \
+                   BR2_PACKAGE_RAUC; do
+            grep -q "^${s}=y$" "${cfg}" || { echo "::error::${s} is not enabled ($(grep "^${s}=" "${cfg}" || echo unset))"; fail=1; }
+          done
+          echo "--- RK3588 media/AI packages (must survive Config.in parsing) ---"
+          for s in BR2_PACKAGE_ROCKCHIP_MPP BR2_PACKAGE_LIBRGA BR2_PACKAGE_LIBRKNNRT \
+                   BR2_PACKAGE_RKNPU BR2_PACKAGE_FFMPEG_ROCKCHIP; do
+            if grep -q "^${s}=y$" "${cfg}"; then
+              echo "ok    ${s}=y"
+            else
+              echo "::error::${s} was dropped: it is set in configs/rock5b_defconfig but missing from the resolved .config (Config.in not sourced, unmet dependency, or stale symbol)"
+              fail=1
+            fi
+          done
+          echo "--- known-unavailable HAOS-CN symbols (private packages, tolerated) ---"
+          for s in BR2_PACKAGE_RTL8821CU BR2_PACKAGE_AP6236_FIRMWARE \
+                   BR2_PACKAGE_AP6256_FIRMWARE BR2_PACKAGE_MATTER; do
+            grep -q "^${s}=y$" "${cfg}" || echo "::warning::${s}=y is requested by rock5b_defconfig but not set (private HAOS-CN package, absent from this self-contained tree)"
+          done
+          echo "--- kernel config chain ---"
+          grep -E '^BR2_LINUX_KERNEL_(CUSTOM_VERSION_VALUE|CUSTOM_CONFIG_FILE|CONFIG_FRAGMENT_FILES|INTREE_DTS_NAME)=' "${cfg}" || true
+          grep -q '^BR2_LINUX_KERNEL_INTREE_DTS_NAME="rockchip/rk3588-rock-5b"$' "${cfg}" || {
+            echo "::error::kernel DTB name is not rockchip/rk3588-rock-5b"; fail=1; }
+          exit "${fail}"
+
+      - name: Build the full image
+        if: env.STAGE == 'full'
+        run: |
+          set +e
+          : > /tmp/build.log
+          docker run --rm --privileged \
+            -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
+            -v "${BUILD_TREE}:/build" -v /mnt/cache:/cache -v /mnt/output:/build/output \
+            haos-builder:local bash -c 'cd /build && make' 2>&1 | tee -a /tmp/build.log
+          rc=${PIPESTATUS[0]}
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::Buildroot build FAILED (rc=${rc}). The real error lines are re-emitted below and kept in the build-log artifact."
+            pat='Error [0-9]+|\*\*\* |ERROR:|FATAL|No rule to make target|not found|failed'
+            grep -nE "${pat}" /tmp/build.log | head -n 60 \
+              | while IFS= read -r l; do echo "::error::${l}"; done
+            echo "===== build.log tail (200 lines) ====="
+            tail -n 200 /tmp/build.log
+            exit 1
+          fi
+          echo "Build finished OK"
+
+      - name: Check Linux kernel config
+        if: env.STAGE == 'full'
+        run: |
+          set +e
+          docker run --rm --privileged \
+            -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
+            -v "${BUILD_TREE}:/build" -v /mnt/cache:/cache -v /mnt/output:/build/output \
+            haos-builder:local \
+            make BR2_CHECK_DOTCONFIG_OPTS="--github-format --strip-path-prefix=/build/" \
+              linux-check-dotconfig 2>&1 | tee /tmp/dotconfig.log
+          rc=${PIPESTATUS[0]}
+          # check-dotconfig.py only emits ::warning:: lines, so a non-zero rc here is
+          # a real problem (unreadable fragment/config), not a config diff.
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::linux-check-dotconfig failed with rc=${rc}"
+            exit 1
+          fi
+
+      - name: List and checksum the images
+        if: env.STAGE == 'full'
+        run: |
+          set -euo pipefail
+          ls -la /mnt/output/images/
+          cd /mnt/output/images/
+          if ! compgen -G 'haos_*' > /dev/null; then
+            echo "::error::no haos_* image was produced in output/images"
+            exit 1
+          fi
+          sha256sum haos_* > SHA256SUMS.rock5b
+          cat SHA256SUMS.rock5b
+
+      - name: Upload image artifact
+        if: env.STAGE == 'full'
+        uses: actions/upload-artifact@v7
+        with:
+          name: haos_rock5b-image
+          path: |
+            /mnt/output/images/haos_*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Save ccache
+        if: always() && env.STAGE == 'full'
+        uses: actions/cache/save@v6
+        with:
+          path: /mnt/cache/cc
+          key: haos-cc-rock5b-${{ github.run_id }}
+
+      - name: Upload build logs (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rock5b-image-logs
+          path: |
+            /mnt/output/.config
+            /tmp/build.log
+            /tmp/dotconfig.log
+            /tmp/docker-build.log
+          retention-days: 7
+          if-no-files-found: ignore

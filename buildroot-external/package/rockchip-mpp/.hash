@@ -1,0 +1,4 @@
+# https://github.com/rockchip-linux/mpp/archive/refs/tags/1.1.0.tar.gz
+sha256  7bb0040f364468ad9abbb71a04553ebc6a5814584e083c2fc9a553783e9656df  mpp-1.1.0.tar.gz
+# Locally computed from the release tarball
+sha256  ed57d96d27be775b22f9571d3724ef84e0d0b8f24b805ec7f87a32189de19a9c  LICENSES/Apache-2.0

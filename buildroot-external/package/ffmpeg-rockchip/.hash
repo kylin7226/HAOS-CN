@@ -1,0 +1,5 @@
+# https://github.com/nyanmisaka/ffmpeg-rockchip/archive/b187bf527644cb7b1ee924a019bfd24602da67eb.tar.gz
+# (upstream publishes no tags; pinned to this commit for reproducibility)
+sha256  79985cd90bd4e5f43ed9b1be4986fd38012d0b333641e55309eb029866e09fb6  ffmpeg-rockchip-b187bf527644cb7b1ee924a019bfd24602da67eb.tar.gz
+# Locally computed from the tarball
+sha256  2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af  LICENSE.md

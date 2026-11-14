@@ -1,0 +1,4 @@
+# https://github.com/airockchip/librga/archive/refs/tags/v1.10.0.tar.gz
+sha256  4d56f2d8577af6c09077212e16db91482b017fbf8ee78b4aa14ef3d4b30ae6d9  librga-1.10.0.tar.gz
+# Locally computed from the release tarball
+sha256  58f1fdcee3211f839f749c1ed97ca87fd56d9d01d729bb74241eca9e2ac710bc  COPYING
