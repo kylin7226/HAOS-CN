@@ -46,7 +46,7 @@ permissions:
 env:
   ARCH: arm64
   CROSS_COMPILE: aarch64-linux-gnu-
-  KVER: "6.18"
+  KVER: "6.18.58"
 
 jobs:
   verify:
@@ -106,7 +106,10 @@ jobs:
           # kernel dir and drop it beside HAOS-CN's buildroot-external/kernel/ so
           # $(BR2_EXTERNAL_HAOS_PATH)/kernel/v6.18.y/* resolves like the real build.
           up="${RUNNER_TEMP}/os-upstream"
-          git clone --depth 1 --filter=blob:none --sparse \
+          # Pin to the same upstream release the image build uses (UPSTREAM_REF in
+          # rock5b-image-build.yml), so the base+fragment config verified here is
+          # byte-identical to the one the real rock5b image is built with.
+          git clone --quiet --depth 1 --branch 18.5 --filter=blob:none --sparse \
             https://github.com/home-assistant/operating-system.git "${up}"
           git -C "${up}" sparse-checkout set buildroot-external/kernel
           ext="${GITHUB_WORKSPACE}/buildroot-external"

@@ -17,10 +17,20 @@ LIBRKNNRT_API_DIR = rknpu2/runtime/Linux/librknn_api
 
 # The rknn-toolkit2 repository tarball is ~1.6 GB (models, docs, other targets);
 # only the aarch64 runtime library, its headers and the license are needed.
-LIBRKNNRT_EXTRACT_ONLY = \
-	$(LIBRKNNRT_API_DIR)/aarch64/librknnrt.so \
-	$(LIBRKNNRT_API_DIR)/include/* \
-	LICENSE
+#
+# The GitHub archive wraps everything in a top-level dir (rknn-toolkit2-<ver>), and
+# Buildroot matches EXTRACT_ONLY against the STORED member names with tar's default
+# --no-wildcards, so bare paths like "rknpu2/..." select nothing and "include/*" is
+# taken literally. Override the extract instead: a leading */ matches the top dir,
+# --wildcards enables the include/* glob, and --strip-components=1 removes the top
+# dir exactly like Buildroot's default extract.
+LIBRKNNRT_EXTRACT_CMDS = \
+	$(TAR) -x --strip-components=1 --wildcards --no-wildcards-match-slash \
+		-C $(@D) \
+		-f $(DL_DIR)/$(LIBRKNNRT_SOURCE) \
+		'*/$(LIBRKNNRT_API_DIR)/aarch64/librknnrt.so' \
+		'*/$(LIBRKNNRT_API_DIR)/include/*' \
+		'*/LICENSE'
 
 define LIBRKNNRT_INSTALL_STAGING_CMDS
 	$(INSTALL) -D -m 0644 $(@D)/$(LIBRKNNRT_API_DIR)/aarch64/librknnrt.so \
