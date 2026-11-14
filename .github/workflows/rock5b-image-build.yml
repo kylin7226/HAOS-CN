@@ -205,6 +205,10 @@ jobs:
           set +e
           : > /tmp/build.log
           case "${STAGE}" in
+            # Cumulative: each stage re-lists the prior stages' targets so Buildroot
+            # rebuilds them ccache-warm (only /mnt/cache/cc persists between runs, not
+            # the output/ stamps). The kernel stage is the first to compile the
+            # mandatory out-of-tree rknpu.ko against the image kernel.
             packages) targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent" ;;
             kernel)   targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent linux rknpu" ;;
             full)     targets="" ;;
