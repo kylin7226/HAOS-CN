@@ -1,4 +1,9 @@
-# https://github.com/airockchip/rknn-toolkit2/archive/refs/tags/v2.3.2.tar.gz
-sha256  fa297b4ef8111372b3853ff6c29c520a12242708fb431a0989d8b82cc479233b  rknn-toolkit2-2.3.2.tar.gz
-# Locally computed from the release tarball
+# Hashes of the five files fetched per-file from rknn-toolkit2 v2.3.2
+# (raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.3.2/...), locally
+# computed. The previous entry for the whole rknn-toolkit2-2.3.2.tar.gz repo
+# archive is gone: that ~1.6 GB tarball is no longer downloaded.
+sha256  d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8  librknnrt.so
+sha256  c48e11a6f41b451a5fd1e4ad774ea60252d3d94f78bee9b21ea3d21b21deba9a  rknn_api.h
+sha256  af5983da0ca244ca31dc3162aa683322b0285531196c7a770f29cd2e3b8ccaa6  rknn_custom_op.h
+sha256  aaadd9a7118de30a06b222996b6731db77095d00f5931a7a98c83a67f14a4d42  rknn_matmul_api.h
 sha256  d846f57d942c7dfdca7b8b54f9e8bb39e1e226790dc4f5ee205d6fd678961720  LICENSE

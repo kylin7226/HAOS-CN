@@ -235,6 +235,15 @@ jobs:
                 | grep -vE '[0-9]+K \.+|[0-9]+% +[0-9.]+[KMG]' \
                 | tail -n 80 | while IFS= read -r l; do echo "::error::${l}"; done
             fi
+            # The pkgdir grep above misses root-cause lines that do not name the
+            # build dir (e.g. "cp: cannot stat '/cache/dl/librknnrt.so'", wget
+            # failures, "No space left on device", hash mismatches). The job log and
+            # the build-log artifact both require auth to read on this fork, so
+            # re-emit the real error lines as public annotations too.
+            echo "===== real error lines (public, keyword-matched) ====="
+            grep -vE '[0-9]+K \.+|[0-9]+% +[0-9.]+[KMG]' /tmp/build.log \
+              | grep -iE 'cannot stat|No such file|No space left|wget:|ERROR:|[Hh]ash|checksum|Permission denied|tar:|Error [0-9]|\*\*\*|fatal|[Ff]ailed' \
+              | tail -n 40 | while IFS= read -r l; do echo "::error::${l}"; done
             # Always also show the make error lines and a noise-stripped tail so the
             # actual compiler/linker failure is visible even if the stamp grep misses.
             echo "===== make error lines ====="
