@@ -170,14 +170,22 @@ jobs:
                    BR2_PACKAGE_RAUC; do
             grep -q "^${s}=y$" "${cfg}" || { echo "::error::${s} is not enabled ($(grep "^${s}=" "${cfg}" || echo unset))"; fail=1; }
           done
-          echo "--- RK3588 media/AI packages (must survive Config.in parsing) ---"
-          for s in BR2_PACKAGE_ROCKCHIP_MPP BR2_PACKAGE_LIBRGA BR2_PACKAGE_LIBRKNNRT \
-                   BR2_PACKAGE_RKNPU BR2_PACKAGE_FFMPEG_ROCKCHIP; do
+          echo "--- RK3588 media/AI packages ---"
+          # Mandatory (kernel side): the rknpu out-of-tree module and the kernel
+          # itself. The MPP/RGA drivers, Panthor (GPU) and pwm-fan + thermal
+          # (fan control) are compiled INTO the kernel by
+          # board/radxa/rock5b/kernel.config, so there is no package for them.
+          for s in BR2_PACKAGE_RKNPU BR2_PACKAGE_LIBRKNNRT BR2_LINUX_KERNEL; do
+            grep -q "^${s}=y$" "${cfg}" || {
+              echo "::error::${s} was dropped, but the kernel-side RKNPU/GPU/fan support depends on it"; fail=1; }
+          done
+          # Userspace accelerators: nice to have, containers can bring their own
+          # (see the board kernel.config note), so a drop is a warning, not an error.
+          for s in BR2_PACKAGE_ROCKCHIP_MPP BR2_PACKAGE_LIBRGA BR2_PACKAGE_FFMPEG_ROCKCHIP; do
             if grep -q "^${s}=y$" "${cfg}"; then
               echo "ok    ${s}=y"
             else
-              echo "::error::${s} was dropped: it is set in configs/rock5b_defconfig but missing from the resolved .config (Config.in not sourced, unmet dependency, or stale symbol)"
-              fail=1
+              echo "::warning::${s} was dropped: it is set in configs/rock5b_defconfig but missing from the resolved .config (Config.in not sourced, unmet dependency, or stale symbol). Containers can provide this userspace instead."
             fi
           done
           echo "--- known-unavailable HAOS-CN symbols (private packages, tolerated) ---"
@@ -210,10 +218,20 @@ jobs:
             haos-builder:local bash -c "cd /build && make ${targets}" 2>&1 | tee -a /tmp/build.log
           rc=${PIPESTATUS[0]}
           if [ "${rc}" -ne 0 ]; then
-            echo "::error::Buildroot build FAILED at stage '${STAGE}' (rc=${rc}). The real error lines are re-emitted below and kept in the build-log artifact."
-            pat='Error [0-9]+|\*\*\* |ERROR:|FATAL|No rule to make target|not found|failed'
-            grep -nE "${pat}" /tmp/build.log | head -n 60 \
-              | while IFS= read -r l; do echo "::error::${l}"; done
+            echo "::error::Buildroot build FAILED at stage '${STAGE}' (rc=${rc}). The failing package and the lines around it are re-emitted below and kept in the build-log artifact."
+            # `make` reports the dying package as "*** [pkg] Error N"; everything
+            # before the last one is that package's own output. CMake's
+            # "-- Looking for X - not found" probes are normal, so do not grep for
+            # a bare "not found"/"failed": pick the error context instead.
+            errline=$(grep -nE '^\*\*\* \[|make(\[[0-9]+\])?: \*\*\* |Error [0-9]+$' /tmp/build.log | tail -n 1 | cut -d: -f1)
+            if [ -n "${errline}" ]; then
+              start=$(( errline > 90 ? errline - 90 : 1 ))
+              echo "===== ${start}..${errline} of build.log (around the failing package) ====="
+              sed -n "${start},${errline}p" /tmp/build.log | while IFS= read -r l; do echo "::error::${l}"; done
+              grep -nE '^\*\*\* \[|make(\[[0-9]+\])?: \*\*\* ' /tmp/build.log | tail -n 10
+            else
+              tail -n 100 /tmp/build.log | while IFS= read -r l; do echo "::error::${l}"; done
+            fi
             echo "===== build.log tail (200 lines) ====="
             tail -n 200 /tmp/build.log
             exit 1
@@ -235,8 +253,23 @@ jobs:
                      /mnt/output/build/linux-*/arch/arm64/boot/dts/rockchip/rk3588-rock-5b.dtb; do
               ls -la ${f} 2>/dev/null || { echo "::error::missing kernel artifact: ${f}"; fail=1; }
             done
+            # The kernel-side pieces the port must ship: vendor MPP/RGA built in,
+            # Panthor GPU, pwm-fan + thermal, and Rocket kept off for rknpu.
+            kcfg=$(echo /mnt/output/build/linux-*/.config | awk '{print $1}')
+            for s in CONFIG_ROCKCHIP_MPP_SERVICE CONFIG_ROCKCHIP_MPP_RKVENC2 \
+                     CONFIG_ROCKCHIP_MPP_RKVDEC2 CONFIG_ROCKCHIP_MULTI_RGA \
+                     CONFIG_DRM_PANTHOR CONFIG_PWM_ROCKCHIP CONFIG_SENSORS_PWM_FAN \
+                     CONFIG_ROCKCHIP_THERMAL CONFIG_MODULES; do
+              grep -q "^${s}=y$" "${kcfg}" || { echo "::error::kernel ${s} is not =y in the image build"; fail=1; }
+            done
+            grep -qE '^CONFIG_DRM_ACCEL_ROCKET=(y|m)$' "${kcfg}" && {
+              echo "::error::CONFIG_DRM_ACCEL_ROCKET is enabled in the image kernel; it would bind the rknn-core DT nodes instead of rknpu.ko"; fail=1; }
+            echo "--- rknpu.ko (out-of-tree NPU module) ---"
             ls -la /mnt/output/build/rknpu-*/rknpu.ko 2>/dev/null \
-              || echo "::error::rknpu.ko was not built"; [ -e /mnt/output/build/rknpu-*/rknpu.ko ] || fail=1
+              || { echo "::error::rknpu.ko was not built"; fail=1; }
+            ls -la /mnt/output/target/lib/modules/*/kernel/drivers/*rknpu* 2>/dev/null \
+              || find /mnt/output/target/lib/modules -name 'rknpu*.ko*' -print \
+              || { echo "::error::rknpu.ko was not installed into the target rootfs"; fail=1; }
           fi
           if [ "${want_img}" = 1 ]; then
             ls -la /mnt/output/images/ || true

@@ -13,10 +13,10 @@ RKNPU_LICENSE = GPL-2.0
 RKNPU_LICENSE_FILES = LICENSE
 RKNPU_DEPENDENCIES = linux
 
-RKNPU_MODULE_MAKE_OPTS = \
-	KERNEL_SRC=$(LINUX_DIR) \
-	CROSS_COMPILE=$(TARGET_CROSS) \
-	ARCH=arm64
+# The kernel-module infrastructure builds with `make -C $(LINUX_DIR) M=$(@D)`
+# (passing ARCH/CROSS_COMPILE/KERNEL_VERSION through the environment) and
+# installs rknpu.ko via a modules_install hook, so no MODULE_MAKE_OPTS or
+# install commands are needed here.
 
 $(eval $(kernel-module))
 $(eval $(generic-package))
