@@ -1,0 +1,155 @@
+name: Rock 5B kernel verify
+
+# Self-contained compile check for the Radxa Rock 5B (RK3588) kernel port.
+# It deliberately does NOT use the private desmond-dong/haos-cn-scripts repo or
+# any secret, so it can run on a fork. It validates the highest-risk parts of the
+# port against pristine mainline v6.18 (the version configs/rock5b_defconfig pins):
+#   1. the vendored ysp MPP/RGA patches + the pwm-fan patch apply cleanly,
+#   2. the board kernel.config fragment's critical symbols resolve,
+#   3. the kernel + the in-tree vendor drivers (MPP/RGA/Panthor/pwm-fan) build,
+#   4. the Rock 5B device tree compiles (rk3588-rock-5b.dtb), which exercises the
+#      rknpu / pwm-fan / MPP-RGA DT nodes.
+# NOTE: the base config here is mainline rockchip_defconfig + the board fragment,
+# an approximation of HAOS's own kernel base config; the goal is to catch patch /
+# Kconfig / DT / driver-build breakage, not to reproduce the exact HAOS .config.
+
+on:
+  push:
+    branches: [rock5b-port, dev, main]
+    paths:
+      - 'buildroot-external/board/radxa/rock5b/**'
+      - 'buildroot-external/configs/rock5b_defconfig'
+      - '.github/workflows/rock5b-kernel-verify.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: rock5b-kernel-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  CROSS_COMPILE: aarch64-linux-gnu-
+  KVER: "6.18"
+
+jobs:
+  verify:
+    name: Build mainline v6.18 + Rock 5B patches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install cross toolchain and build deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev cpio kmod rsync xz-utils dwarves python3
+
+      - name: Download Linux v${{ env.KVER }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          url="https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-${KVER}.tar.xz"
+          echo "Fetching ${url}"
+          curl -fL --retry 3 -o "linux-${KVER}.tar.xz" "${url}"
+          tar -xf "linux-${KVER}.tar.xz"
+          test -d "linux-${KVER}"
+          echo "LINUX_DIR=${RUNNER_TEMP}/linux-${KVER}" >> "${GITHUB_ENV}"
+
+      - name: Apply board kernel patches (Buildroot lexical order)
+        run: |
+          set -euo pipefail
+          cd "${LINUX_DIR}"
+          # git init so `git apply` can run and will auto-create new directories
+          # for the vendored driver files (Buildroot uses patch -p1; git apply is
+          # stricter and gives better diagnostics for the same end result).
+          git init -q .
+          pdir="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/patches/linux"
+          for p in $(find "${pdir}" -maxdepth 1 -name '*.patch' | sort); do
+            n="$(basename "${p}")"
+            echo "::group::apply ${n}"
+            if ! git apply --verbose --whitespace=nowarn "${p}"; then
+              echo "::endgroup::"
+              echo "::error file=${n}::patch failed to apply to pristine v${KVER}"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Configure (rockchip_defconfig + board kernel.config fragment)
+        run: |
+          set -euo pipefail
+          cd "${LINUX_DIR}"
+          make rockchip_defconfig
+          frag="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/kernel.config"
+          KCONFIG_CONFIG=.config ./scripts/kconfig/merge_config.sh -m .config "${frag}"
+          make olddefconfig
+          echo "ARCH_ROCKCHIP -> $(grep -E '^ARCH_ROCKCHIP=' .config || echo MISSING)"
+
+      - name: Check critical config symbols took effect
+        run: |
+          set -uo pipefail
+          cd "${LINUX_DIR}"
+          fail=0
+          crit="CONFIG_ROCKCHIP_MPP_SERVICE CONFIG_ROCKCHIP_MPP_RKVENC2 \
+          CONFIG_ROCKCHIP_MPP_RKVDEC2 CONFIG_ROCKCHIP_MULTI_RGA CONFIG_DRM_PANTHOR \
+          CONFIG_PWM_ROCKCHIP CONFIG_SENSORS_PWM_FAN CONFIG_ROCKCHIP_IOMMU \
+          CONFIG_ARM_SCMI_PROTOCOL"
+          for s in ${crit}; do
+            if grep -q "^${s}=y$" .config; then
+              echo "ok    ${s}=y"
+            else
+              echo "::error::critical symbol ${s} is NOT =y (final .config: $(grep "^${s}=" .config || echo unset))"
+              fail=1
+            fi
+          done
+          echo "--- non-critical requested =y symbols that dropped (warnings) ---"
+          frag="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/kernel.config"
+          while IFS= read -r line; do
+            case "${line}" in
+              CONFIG_*=y)
+                s="${line%%=*}"
+                case " ${crit} " in *" ${s} "*) continue ;; esac
+                grep -q "^${s}=y$" .config || echo "::warning::${s}=y requested but not set (unmet dependency in this approximate base config?)"
+                ;;
+            esac
+          done < "${frag}"
+          exit "${fail}"
+
+      - name: Build Image + DTBs + modules
+        run: |
+          set -euo pipefail
+          cd "${LINUX_DIR}"
+          j="$(nproc)"; echo "parallel jobs: ${j}"
+          make -j"${j}" Image
+          make -j"${j}" dtbs
+          make -j"${j}" modules
+
+      - name: Assert Rock 5B artifacts
+        run: |
+          set -euo pipefail
+          cd "${LINUX_DIR}"
+          ls -la arch/arm64/boot/Image
+          dtb="arch/arm64/boot/dts/rockchip/rk3588-rock-5b.dtb"
+          if [ ! -f "${dtb}" ]; then
+            echo "::error::${dtb} was not produced by the dtbs build"
+            exit 1
+          fi
+          ls -la "${dtb}"
+          echo "Rock 5B kernel + DTB built OK"
+
+      - name: Upload resolved .config (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rock5b-verify-dotconfig
+          path: ${{ env.LINUX_DIR }}/.config
+          retention-days: 7
+          if-no-files-found: ignore
