@@ -50,7 +50,7 @@ env:
 
 jobs:
   verify:
-    name: Build mainline v${{ env.KVER }} + Rock 5B patches
+    name: Build mainline v6.18 + Rock 5B patches
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
