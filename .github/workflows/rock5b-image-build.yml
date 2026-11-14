@@ -218,22 +218,30 @@ jobs:
             haos-builder:local bash -c "cd /build && make ${targets}" 2>&1 | tee -a /tmp/build.log
           rc=${PIPESTATUS[0]}
           if [ "${rc}" -ne 0 ]; then
-            echo "::error::Buildroot build FAILED at stage '${STAGE}' (rc=${rc}). The failing package and the lines around it are re-emitted below and kept in the build-log artifact."
-            # `make` reports the dying package as "*** [pkg] Error N"; everything
-            # before the last one is that package's own output. CMake's
-            # "-- Looking for X - not found" probes are normal, so do not grep for
-            # a bare "not found"/"failed": pick the error context instead.
-            errline=$(grep -nE '^\*\*\* \[|make(\[[0-9]+\])?: \*\*\* |Error [0-9]+$' /tmp/build.log | tail -n 1 | cut -d: -f1)
-            if [ -n "${errline}" ]; then
-              start=$(( errline > 90 ? errline - 90 : 1 ))
-              echo "===== ${start}..${errline} of build.log (around the failing package) ====="
-              sed -n "${start},${errline}p" /tmp/build.log | while IFS= read -r l; do echo "::error::${l}"; done
-              grep -nE '^\*\*\* \[|make(\[[0-9]+\])?: \*\*\* ' /tmp/build.log | tail -n 10
-            else
-              tail -n 100 /tmp/build.log | while IFS= read -r l; do echo "::error::${l}"; done
+            echo "::error::Buildroot build FAILED at stage '${STAGE}' (rc=${rc}). The failing package and its real output are re-emitted below and kept in the build-log artifact."
+            # Parallel `make` interleaves a concurrent package's wget progress
+            # ("12345K .... 98% 109M") right before the dying package's error, so a
+            # raw 90-line window is pure download noise. Two-step instead:
+            #   1. Name the failing package from the "*** [output/build/<pkg>/.stamp_*] Error N"
+            #      target line (Buildroot's pkg-generic stamps carry the package dir).
+            #   2. Show that package's own output: every log line mentioning its build
+            #      dir, with download-progress lines stripped.
+            failpkg=$(grep -oE 'output/build/[A-Za-z0-9_.+-]+/\.stamp_[A-Za-z_]+' /tmp/build.log | tail -n 1)
+            if [ -n "${failpkg}" ]; then
+              pkgdir=$(echo "${failpkg}" | sed -E 's#output/build/([^/]+)/.*#\1#')
+              echo "::error::Failing package: ${pkgdir} (target ${failpkg})"
+              echo "===== lines mentioning ${pkgdir} (progress noise stripped) ====="
+              grep -F "${pkgdir}" /tmp/build.log \
+                | grep -vE '[0-9]+K \.+|[0-9]+% +[0-9.]+[KMG]' \
+                | tail -n 80 | while IFS= read -r l; do echo "::error::${l}"; done
             fi
-            echo "===== build.log tail (200 lines) ====="
-            tail -n 200 /tmp/build.log
+            # Always also show the make error lines and a noise-stripped tail so the
+            # actual compiler/linker failure is visible even if the stamp grep misses.
+            echo "===== make error lines ====="
+            grep -nE '\*\*\* \[|make(\[[0-9]+\])?: \*\*\*|Error [0-9]+$' /tmp/build.log \
+              | grep -vE '[0-9]+K \.+|[0-9]+% +[0-9.]+[KMG]' | tail -n 20
+            echo "===== build.log tail (noise-stripped, 120 lines) ====="
+            grep -vE '[0-9]+K \.+|[0-9]+% +[0-9.]+[KMG]' /tmp/build.log | tail -n 120
             exit 1
           fi
           echo "Stage '${STAGE}' finished OK"
