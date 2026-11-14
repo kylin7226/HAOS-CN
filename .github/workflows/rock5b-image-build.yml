@@ -7,15 +7,24 @@ name: Rock 5B image build
 # haos-builder container locally from upstream's Dockerfile, then run Buildroot
 # inside it with --privileged (loop devices are needed for the data partition).
 #
-# STAGES (workflow_dispatch input, so the port can be validated step by step):
+# STAGES (workflow_dispatch input, so the port is validated step by step). A full
+# HAOS build does not fit in one 6-hour run on a standard 2-core runner, so the
+# expensive part is split into cumulative stages that carry state through ccache
+# (restore-keys also pick up upstream's haos-cc-rock5b cache):
 #   config      assemble + `make rock5b_defconfig` + audit the resolved .config
 #               (minutes; catches missing package registrations, dropped symbols,
 #               bad .hash files and fragment problems before paying for a build)
-#   full        everything above, then the complete image + linux-check-dotconfig
-#               + image upload (hours on a standard 2-core runner)
+#   packages    config + every userspace package, incl. the five Rock 5B ones
+#               (toolchain, rockchip-mpp, librga, librknnrt, rknpu's host deps,
+#               ffmpeg-rockchip, hassio containers)
+#   kernel      packages + linux (Image + rk3588-rock-5b.dtb via Buildroot, which
+#               applies patches/linux and the HAOS fragment chain) + rknpu.ko
+#   full        everything: bootloader, rootfs, the RAUC-signed disk image,
+#               linux-check-dotconfig and the image artifact upload
 #
-# A push to rock5b-port always runs the cheap `config` stage, so regressions in
-# the external tree are caught without burning hours.
+# A push to rock5b-port runs `config`, unless the commit message selects another
+# stage with [stage:packages] / [stage:kernel] / [stage:full] (or the [full]
+# shorthand), so regressions in the external tree are caught without burning hours.
 #
 # The CN-specific bits that haos.sh normally injects are not needed for rock5b:
 # this tree ships its own Config.in / external.mk / external.desc, and the only
@@ -35,6 +44,8 @@ on:
         default: config
         options:
           - config
+          - packages
+          - kernel
           - full
       upstream_ref:
         description: 'home-assistant/operating-system ref to build against'
@@ -62,7 +73,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
-      STAGE: ${{ inputs.stage || 'config' }}
+      # No PAT is available on this fork, so workflow_dispatch cannot be triggered
+      # by the API: a push whose commit message carries [stage:<name>] selects the
+      # stage instead (and [full] is kept as a shorthand).
+      STAGE: ${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }}
       UPSTREAM_REF: ${{ inputs.upstream_ref || '18.5' }}
       RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
       RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
@@ -177,18 +191,26 @@ jobs:
             echo "::error::kernel DTB name is not rockchip/rk3588-rock-5b"; fail=1; }
           exit "${fail}"
 
-      - name: Build the full image
-        if: env.STAGE == 'full'
+      - name: Build stage '${{ env.STAGE }}'
+        if: env.STAGE != 'config'
         run: |
           set +e
           : > /tmp/build.log
+          case "${STAGE}" in
+            packages) targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent" ;;
+            kernel)   targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent linux rknpu" ;;
+            full)     targets="" ;;
+            *) echo "::error::unknown stage '${STAGE}'"; exit 1 ;;
+          esac
+          echo "stage=${STAGE} make targets: ${targets:-<all>}"
+          # shellcheck disable=SC2086
           docker run --rm --privileged \
             -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
             -v "${BUILD_TREE}:/build" -v /mnt/cache:/cache -v /mnt/output:/build/output \
-            haos-builder:local bash -c 'cd /build && make' 2>&1 | tee -a /tmp/build.log
+            haos-builder:local bash -c "cd /build && make ${targets}" 2>&1 | tee -a /tmp/build.log
           rc=${PIPESTATUS[0]}
           if [ "${rc}" -ne 0 ]; then
-            echo "::error::Buildroot build FAILED (rc=${rc}). The real error lines are re-emitted below and kept in the build-log artifact."
+            echo "::error::Buildroot build FAILED at stage '${STAGE}' (rc=${rc}). The real error lines are re-emitted below and kept in the build-log artifact."
             pat='Error [0-9]+|\*\*\* |ERROR:|FATAL|No rule to make target|not found|failed'
             grep -nE "${pat}" /tmp/build.log | head -n 60 \
               | while IFS= read -r l; do echo "::error::${l}"; done
@@ -196,7 +218,32 @@ jobs:
             tail -n 200 /tmp/build.log
             exit 1
           fi
-          echo "Build finished OK"
+          echo "Stage '${STAGE}' finished OK"
+
+      - name: Assert stage artifacts
+        if: env.STAGE != 'config'
+        run: |
+          set -uo pipefail
+          fail=0
+          want_kernel=0; want_img=0
+          case "${STAGE}" in
+            kernel|full) want_kernel=1 ;;
+          esac
+          [ "${STAGE}" = full ] && want_img=1
+          if [ "${want_kernel}" = 1 ]; then
+            for f in /mnt/output/build/linux-*/arch/arm64/boot/Image \
+                     /mnt/output/build/linux-*/arch/arm64/boot/dts/rockchip/rk3588-rock-5b.dtb; do
+              ls -la ${f} 2>/dev/null || { echo "::error::missing kernel artifact: ${f}"; fail=1; }
+            done
+            ls -la /mnt/output/build/rknpu-*/rknpu.ko 2>/dev/null \
+              || echo "::error::rknpu.ko was not built"; [ -e /mnt/output/build/rknpu-*/rknpu.ko ] || fail=1
+          fi
+          if [ "${want_img}" = 1 ]; then
+            ls -la /mnt/output/images/ || true
+            compgen -G '/mnt/output/images/haos_*' > /dev/null \
+              || { echo "::error::no haos_* image was produced in output/images"; fail=1; }
+          fi
+          exit "${fail}"
 
       - name: Check Linux kernel config
         if: env.STAGE == 'full'
@@ -240,7 +287,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save ccache
-        if: always() && env.STAGE == 'full'
+        if: always() && env.STAGE != 'config'
         uses: actions/cache/save@v6
         with:
           path: /mnt/cache/cc
