@@ -144,7 +144,7 @@ jobs:
           make olddefconfig
           echo "--- resolved key symbols ---"
           for s in CONFIG_ARCH_ROCKCHIP CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_PLATFORM_SUPPORT \
-                   CONFIG_VIDEO_DEV CONFIG_VIDEO_V4L2 CONFIG_V4L2_MEM2MEM_DEV \
+                   CONFIG_VIDEO_DEV CONFIG_V4L2_MEM2MEM_DEV CONFIG_PCIE_ROCKCHIP_DW_HOST \
                    CONFIG_DRM CONFIG_DRM_ROCKCHIP CONFIG_DRM_PANTHOR; do
             printf '%-34s %s\n' "${s}" "$(grep -E "^${s}=" .config || echo MISSING)"
           done
@@ -178,7 +178,7 @@ jobs:
           # videobuf2 symbol they reference must also be =y; if it is =m (module)
           # or unset, the vmlinux link dies with undefined references. Flag it as
           # an annotation BEFORE the long build so the cause is obvious.
-          for s in CONFIG_VIDEO_V4L2 CONFIG_V4L2_MEM2MEM_DEV CONFIG_VIDEOBUF2_CORE \
+          for s in CONFIG_V4L2_MEM2MEM_DEV CONFIG_VIDEOBUF2_CORE \
                    CONFIG_VIDEOBUF2_V4L2 CONFIG_VIDEOBUF2_MEMOPS CONFIG_VIDEOBUF2_VMALLOC \
                    CONFIG_VIDEOBUF2_DMA_CONTIG; do
             v="$(grep -E "^${s}=" .config || echo unset)"
