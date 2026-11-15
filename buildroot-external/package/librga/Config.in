@@ -5,7 +5,8 @@ config BR2_PACKAGE_LIBRGA
 	depends on BR2_TOOLCHAIN_USES_GLIBC
 	help
 	  Rockchip Raster Graphic Acceleration (RGA) userspace library
-	  (prebuilt aarch64). Drives RGA2/RGA3 2D acceleration
-	  (blit/scale/convert/csc) via /dev/rga. Used by ffmpeg-rockchip.
+	  (prebuilt aarch64, pinned to librga 1.10.6). Drives RGA2/RGA3 2D
+	  acceleration (blit/scale/convert/csc) via /dev/rga. Used by
+	  ffmpeg-rockchip.
 
 	  https://github.com/airockchip/librga
