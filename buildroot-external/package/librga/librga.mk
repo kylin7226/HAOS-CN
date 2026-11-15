@@ -8,7 +8,12 @@
 #
 ################################################################################
 
-LIBRGA_VERSION = v1.10.0
+# 1.10.6 is airockchip/librga's current main-HEAD API version, but it has NO
+# release tag (tags stop at v1.10.0). Pin the exact version-bump commit so the
+# download is frozen/reproducible instead of tracking the moving branch.
+# LIBRGA_REAL_VERSION is the human-readable version reported in the generated .pc.
+LIBRGA_VERSION = 2b32edcb97b601b25683e2941d888c8515da6d55
+LIBRGA_REAL_VERSION = 1.10.6
 LIBRGA_SITE = $(call github,airockchip,librga,$(LIBRGA_VERSION))
 LIBRGA_LICENSE = Apache-2.0
 LIBRGA_LICENSE_FILES = COPYING
@@ -23,7 +28,7 @@ define LIBRGA_GEN_PC
 		'' \
 		'Name: librga' \
 		'Description: Rockchip RGA 2D acceleration library' \
-		'Version: $(patsubst v%,%,$(LIBRGA_VERSION))' \
+		'Version: $(LIBRGA_REAL_VERSION)' \
 		'Libs: -L$${libdir} -lrga' \
 		'Cflags: -I$${includedir} -I$${includedir}/rga' \
 		> $(1)/usr/lib/pkgconfig/librga.pc

@@ -1,4 +1,5 @@
-# https://github.com/airockchip/librga/archive/refs/tags/v1.10.0.tar.gz
-sha256  4d56f2d8577af6c09077212e16db91482b017fbf8ee78b4aa14ef3d4b30ae6d9  librga-1.10.0.tar.gz
-# Locally computed from the release tarball
+# https://github.com/airockchip/librga/archive/2b32edcb97b601b25683e2941d888c8515da6d55.tar.gz
+# librga 1.10.6 — the main-HEAD version-bump commit (no release tag exists for it).
+sha256  614280517e8c06bac350234f6fe3ec68a15ab1394dc964202ddeae955aef1cbd  librga-2b32edcb97b601b25683e2941d888c8515da6d55.tar.gz
+# Locally computed from the commit tarball (COPYING unchanged since v1.10.0)
 sha256  58f1fdcee3211f839f749c1ed97ca87fd56d9d01d729bb74241eca9e2ac710bc  COPYING
