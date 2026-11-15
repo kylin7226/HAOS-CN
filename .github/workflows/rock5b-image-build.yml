@@ -302,6 +302,8 @@ jobs:
             ls -la /mnt/output/images/ || true
             compgen -G '/mnt/output/images/haos_*' > /dev/null \
               || { echo "::error::no haos_* image was produced in output/images"; fail=1; }
+            compgen -G '/mnt/output/images/haos_rock5b-*.raucb' > /dev/null \
+              || { echo "::error::no haos_rock5b-*.raucb OTA bundle was produced in output/images"; fail=1; }
           fi
           exit "${fail}"
 
@@ -333,9 +335,15 @@ jobs:
             echo "::error::no haos_rock5b-*.img.xz was produced in output/images (the board hook runs convert_disk_image_xz)"
             exit 1
           fi
-          sha256sum haos_rock5b-*.img.xz > SHA256SUMS.rock5b
+          # genimage builds the .raucb OTA bundle as a second image (genimage.cfg
+          # -> image-raucb-spl.cfg), signed with the self-signed cert.pem/key.pem.
+          if ! compgen -G 'haos_rock5b-*.raucb' > /dev/null; then
+            echo "::error::no haos_rock5b-*.raucb was produced in output/images (genimage should bundle the RAUC OTA image)"
+            exit 1
+          fi
+          sha256sum haos_rock5b-*.img.xz haos_rock5b-*.raucb > SHA256SUMS.rock5b
           cat SHA256SUMS.rock5b
-          du -h haos_rock5b-*.img.xz
+          du -h haos_rock5b-*.img.xz haos_rock5b-*.raucb
 
       - name: Publish the image to the rock5b-dev release
         if: env.STAGE == 'full'
@@ -346,10 +354,17 @@ jobs:
           body: |
             Self-signed development images for the Radxa Rock 5B, built by the
             `Rock 5B image build` workflow from branch `${{ github.ref_name }}`
-            (commit `${{ github.sha }}`). Not OTA-updatable to a signed release.
+            (commit `${{ github.sha }}`).
+
+            - `haos_rock5b-*.img.xz` — full disk image, flash to an SD/eMMC for a
+              fresh install.
+            - `haos_rock5b-*.raucb` — RAUC A/B OTA update bundle. Signed with a
+              public self-signed certificate, so it is NOT OTA-updatable to/from a
+              signed release; use it only against a device flashed with this build.
           prerelease: true
           files: |
             /mnt/output/images/haos_rock5b-*.img.xz
+            /mnt/output/images/haos_rock5b-*.raucb
             /mnt/output/images/SHA256SUMS.rock5b
 
       - name: Upload image artifact
@@ -359,6 +374,7 @@ jobs:
           name: haos_rock5b-image
           path: |
             /mnt/output/images/haos_rock5b-*.img.xz
+            /mnt/output/images/haos_rock5b-*.raucb
             /mnt/output/images/SHA256SUMS.rock5b
           retention-days: 7
           if-no-files-found: error
