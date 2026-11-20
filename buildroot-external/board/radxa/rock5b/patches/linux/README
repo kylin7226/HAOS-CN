@@ -51,6 +51,10 @@ historical offset-copy fix, without importing unrelated driver changes.
 This is not the complete ysp hardening series; codec and hardware regression
 validation remains necessary.
 
+0001–0004 apply cleanly to v6.18.58 and compile with the pinned HAOS base +
+fragment config (see the `rock5b-kernel-verify` workflow). The bounds checks
+are exercised by the sanitizer regression in `.github/tests`.
+
 ## Fan note
 
 No fan patch is needed. Mainline v6.18 `rk3588-rock-5b-5bp-5t.dtsi` already
