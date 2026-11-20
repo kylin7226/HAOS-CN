@@ -17,24 +17,29 @@ on:
 #  watch:
 #    types: [started]
 
-#env:
-#  RUN_VALIDATION: true
+env:
+  UPSTREAM_REF: '18.5'
 
 jobs:
   prepare:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_ova: ${{ steps.set-matrix.outputs.has_ova }}
+      version_suffix: ${{ steps.set-matrix.outputs.version_suffix }}
     steps:
       - id: set-matrix
+        env:
+          TARGETS: ${{ inputs.targets || 'rpi3_64,rpi4_64,rpi5_64,ova,generic_x86_64,generic_aarch64,green,yellow,panther_x2,orangepi_cm4,rock5b' }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGETS="${{ github.event.inputs.targets }}"
-          else
-            TARGETS="rpi3_64,rpi4_64,rpi5_64,ova,generic_x86_64,generic_aarch64,green,yellow,panther_x2,orangepi_cm4,rock5b"
-          fi
-          JSON=$(echo "$TARGETS" | jq -R -c 'split(",")')
-          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          JSON=$(printf '%s' "$TARGETS" | jq -R -c 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | unique')
+          printf '%s' "$JSON" | jq -e 'length > 0 and all(.[]; . as $target | ["rpi3_64","rpi4_64","rpi5_64","ova","generic_x86_64","generic_aarch64","green","yellow","panther_x2","orangepi_cm4","rock5b"] | index($target) != null)' > /dev/null || {
+            echo '::error::Unsupported build target'; exit 1;
+          }
+          echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+          echo "has_ova=$(printf '%s' "$JSON" | jq 'index("ova") != null')" >> "$GITHUB_OUTPUT"
+          echo "version_suffix=dev${GITHUB_RUN_ID}$(printf '%04d' "${GITHUB_RUN_ATTEMPT}")" >> "$GITHUB_OUTPUT"
     permissions:
       contents: read
       pull-requests: read
@@ -61,6 +66,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Run local regression checks
+        run: python3 -m unittest discover -s .github/tests -v
+
       - name: Checkout private repo
         uses: actions/checkout@v7
         with:
@@ -68,20 +76,8 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           path: private
 
-      - name: Run only on main
-        if: github.ref_name == 'main'
-        id: get_haos_version
-        run: |
-          ver=$(curl -s https://api.github.com/repos/home-assistant/operating-system/releases/latest | jq -r '.tag_name')
-          echo "CURRENT_VERSION=${ver}" >> $GITHUB_ENV
-  
-      - name: Run only on dev
-        if: github.ref_name == 'dev'
-        id: get_haos_version_dev
-        run: |
-          ver=$(curl -s https://version.home-assistant.io/dev.json | jq -r '.hassos.ova')
-          echo "CURRENT_VERSION=${ver}"
-          echo "CURRENT_VERSION=${ver}" >> $GITHUB_ENV
+      - name: Set upstream version
+        run: echo "CURRENT_VERSION=${UPSTREAM_REF}" >> "$GITHUB_ENV"
         
       - name: Initialization environment and Free up disk space
         run: |
@@ -93,47 +89,25 @@ jobs:
 
       - name: Clone source code and Change Settings.
         run: |
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            git clone https://github.com/home-assistant/operating-system.git -b main
-          else
-            git clone https://github.com/home-assistant/operating-system.git
-          fi
+          set -euo pipefail
+          git clone --depth 1 --branch "${UPSTREAM_REF}" https://github.com/home-assistant/operating-system.git
           cp -r buildroot-external operating-system
           cd operating-system
           git submodule update --init
           
       - name: Set dev version suffix
         if: github.ref_name != 'main'
+        env:
+          VERSION_DEV: ${{ needs.prepare.outputs.version_suffix }}
         run: |
-          VERSION_DEV="dev$(date --utc +'%Y%m%d')"
           sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${VERSION_DEV}\2/" operating-system/buildroot-external/meta
           grep '^VERSION_SUFFIX' operating-system/buildroot-external/meta
 
-      - name: Check signing certificate validity
+      - name: Validate persistent RAUC signing secrets
         env:
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
-        run: |
-          echo -e "${RAUC_CERTIFICATE}" > signing-cert.pem
-          if ! grep -q "BEGIN CERTIFICATE" signing-cert.pem; then
-            echo -e "-----BEGIN CERTIFICATE-----\n${RAUC_CERTIFICATE}\n-----END CERTIFICATE-----" > signing-cert.pem
-          fi
-          if bash operating-system/scripts/check-signing-validity.sh signing-cert.pem operating-system/buildroot-external/ota/rel-ca.pem 760; then
-            rm -f signing-cert.pem
-            exit 0
-          fi
-          echo "::warning::Signing certificate does not chain to rel-ca.pem (normal for self-signed setups, the cert gets appended to the image keyring). Falling back to a leaf-certificate expiry check."
-          ENDDATE=$(openssl x509 -in signing-cert.pem -noout -enddate | cut -d= -f2)
-          if [ -z "${ENDDATE}" ]; then
-            echo "::error::Cannot read the signing certificate. Check the RAUC_CERTIFICATE secret format (full PEM expected)."
-            exit 1
-          fi
-          THRESHOLD=$(date -u -d "+760 days" +%s)
-          if [ "$(date -u -d "${ENDDATE}" +%s)" -lt "${THRESHOLD}" ]; then
-            echo "::error::Signing certificate expires ${ENDDATE} (within 760 days). Rotate the RAUC_CERTIFICATE secret before releasing."
-            exit 1
-          fi
-          echo "Signing certificate is valid until ${ENDDATE} (>= 760 days)."
-          rm -f signing-cert.pem
+          RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+        run: bash .github/scripts/prepare-rauc-signing.sh operating-system
 
       - name: Compute image version
         id: image_version
@@ -158,6 +132,12 @@ jobs:
           MATRIX_TARGET: ${{matrix.target}}
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
           RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+
+      - name: Install validated RAUC signing material
+        env:
+          RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
+          RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+        run: bash .github/scripts/prepare-rauc-signing.sh operating-system
 
       - name: Register Rock 5B packages in Config.in
         run: |
@@ -270,13 +250,13 @@ jobs:
 
   test:
     name: Test HAOS image in QEMU
-    needs: build
-    if: ${{ inputs.run_tests == true }}
+    needs: [prepare, build]
+    if: ${{ inputs.run_tests == true && needs.prepare.outputs.has_ova == 'true' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Clone upstream test suite
         run: |
-          git clone --depth 1 https://github.com/home-assistant/operating-system.git -b dev os-src
+          git clone --depth 1 --branch "${UPSTREAM_REF}" https://github.com/home-assistant/operating-system.git os-src
 
       - name: Install system dependencies
         run: |

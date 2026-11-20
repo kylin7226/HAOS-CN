@@ -1,8 +1,8 @@
 # Rock 5B (RK3588) kernel patches
 
 Buildroot applies every `*.patch` here to the kernel pinned by
-`configs/rock5b_defconfig` (`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18"`),
-in lexical order: 0001 → 0002 → 0003.
+`configs/rock5b_defconfig` (`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18.58"`),
+in lexical order: 0001 → 0002 → 0003 → 0004.
 
 ## 0001-rk3588-vendor-mpp-rga-drivers.patch  (~1 MB)
 ## 0002-rk3588-vendor-mpp-rga-dt.patch        (~15 KB)
@@ -17,11 +17,10 @@ Sourced verbatim from `yisding/rock-5b-ysp`:
     kernel-drivers/patches/rk3588-rkvenc2-01-vcodec-rga-drivers.patch
     kernel-drivers/patches/rk3588-rkvenc2-02-vcodec-rga-dt.patch
 
-Both are generated against **pristine mainline v6.18** (`git am` anchor tip
-`5614909e5803`), which is exactly why the kernel is pinned to `6.18` rather
-than a later stable point release. The driver code is Rockchip vendor code
-under GPL-2.0, forward-ported by ysp; see that repo's `LICENSE.md` for
-provenance. They are vendored here as plain text (not Git LFS).
+Both were generated against mainline v6.18 (`git am` anchor tip
+`5614909e5803`); the image now pins stable v6.18.58. The driver code is
+Rockchip vendor code under GPL-2.0, forward-ported by ysp; see that repo's
+`LICENSE.md` for provenance. They are vendored as plain text (not Git LFS).
 
 The matching `CONFIG_*` symbols are enabled in `../../kernel.config`
 (`CONFIG_ROCKCHIP_MPP_SERVICE/RKVENC2/RKVDEC2/PROC_FS`,
@@ -43,14 +42,23 @@ with `Label or path vdec0 not found`. 0003 backports them verbatim from v7.0
 `rk3588-base.dtsi`. It is generated on top of 0002, so it must apply after it.
 Drop it when the kernel moves to >= v7.0.
 
+## 0004-rk3588-mpp-bound-user-requests.patch
+
+Bounds encoder class-request arrays, fixes register-request truncation and
+unsigned offset checks, rejects partial offset-info elements, and propagates
+validation failures. Adapted from ysp forward-port fixes 0062/0076 and the
+historical offset-copy fix, without importing unrelated driver changes.
+This is not the complete ysp hardening series; codec and hardware regression
+validation remains necessary.
+
 ## Fan note
 
 No fan patch is needed. Mainline v6.18 `rk3588-rock-5b-5bp-5t.dtsi` already
 defines `fan: pwm-fan` (pwm1 ch0, 50000 ns, `cooling-levels = <0 120 150 180
 210 240 255>`, `fan-supply = <&vcc5v0_sys>`) and wires it into `package_thermal`
 with active trips at 55 °C / 65 °C (1 s polling). `CONFIG_SENSORS_PWM_FAN` and
-the thermal symbols in `../../kernel.config` make it functional. To retune the
-curve on real hardware, add a small patch overriding `&package_thermal` trips.
+the thermal symbols in `../../kernel.config` enable the driver. Fan response
+and thermal trips still require verification on the actual board.
 
 ## RKNPU note
 

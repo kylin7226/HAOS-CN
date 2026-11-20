@@ -1,0 +1,147 @@
+Subject: [PATCH] video: rockchip: mpp: bound user register requests
+
+Adapt the class-array checks from ysp forward-port 0062 and request-range
+checks from 0076 to the original driver import. Validate whole offset-info
+elements before copying and propagate validation failures to task creation.
+
+Upstream-Status: Inappropriate [vendor driver forward-port]
+
+---
+diff --git a/drivers/video/rockchip/mpp/mpp_common.c b/drivers/video/rockchip/mpp/mpp_common.c
+--- a/drivers/video/rockchip/mpp/mpp_common.c
++++ b/drivers/video/rockchip/mpp/mpp_common.c
+@@ -1914,33 +1914,37 @@
+ int mpp_check_req(struct mpp_request *req, int base,
+ 		  int max_size, u32 off_s, u32 off_e)
+ {
+-	int req_off;
+-
+-	if (req->offset < base) {
++	u32 req_off;
++
++	if (base < 0 || max_size < 0)
++		return -EINVAL;
++	if (req->offset < (u32)base) {
+ 		mpp_err("error: base %x, offset %x\n",
+ 			base, req->offset);
+ 		return -EINVAL;
+ 	}
+-	req_off = req->offset - base;
++	req_off = req->offset - (u32)base;
++	if (req->size > U32_MAX - req_off)
++		return -EINVAL;
+ 	if ((req_off + req->size) < off_s) {
+ 		mpp_err("error: req_off %x, req_size %x, off_s %x\n",
+ 			req_off, req->size, off_s);
+ 		return -EINVAL;
+ 	}
+-	if (max_size < off_e) {
++	if ((u32)max_size < off_e) {
+ 		mpp_err("error: off_e %x, max_size %x\n",
+ 			off_e, max_size);
+ 		return -EINVAL;
+ 	}
+-	if (req_off > max_size) {
++	if (req_off > (u32)max_size) {
+ 		mpp_err("error: req_off %x, max_size %x\n",
+ 			req_off, max_size);
+ 		return -EINVAL;
+ 	}
+-	if ((req_off + req->size) > max_size) {
++	if (req->size > (u32)max_size - req_off) {
+ 		mpp_err("error: req_off %x, req_size %x, max_size %x\n",
+ 			req_off, req->size, max_size);
+-		req->size = req_off + req->size - max_size;
++		req->size = (u32)max_size - req_off;
+ 	}
+ 
+ 	return 0;
+@@ -1949,16 +1953,18 @@
+ int mpp_extract_reg_offset_info(struct reg_offset_info *off_inf,
+ 				struct mpp_request *req)
+ {
+-	int max_size = ARRAY_SIZE(off_inf->elem);
+-	int cnt = req->size / sizeof(off_inf->elem[0]);
+-
+-	if ((cnt + off_inf->cnt) > max_size) {
++	u32 max_size = ARRAY_SIZE(off_inf->elem);
++	u32 cnt = req->size / sizeof(off_inf->elem[0]);
++
++	if (req->size % sizeof(off_inf->elem[0]))
++		return -EINVAL;
++	if (off_inf->cnt > max_size || cnt > max_size - off_inf->cnt) {
+ 		mpp_err("count %d, total %d, max_size %d\n",
+ 			cnt, off_inf->cnt, max_size);
+ 		return -EINVAL;
+ 	}
+ 	if (copy_from_user(&off_inf->elem[off_inf->cnt],
+-			   req->data, req->size)) {
++			   req->data, cnt * sizeof(off_inf->elem[0]))) {
+ 		mpp_err("copy_from_user failed\n");
+ 		return -EINVAL;
+ 	}
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvdec2.c b/drivers/video/rockchip/mpp/mpp_rkvdec2.c
+--- a/drivers/video/rockchip/mpp/mpp_rkvdec2.c
++++ b/drivers/video/rockchip/mpp/mpp_rkvdec2.c
+@@ -283,7 +283,7 @@
+ 			off_e = hw_info->reg_end * sizeof(u32);
+ 			ret = mpp_check_req(req, 0, sizeof(task->reg), off_s, off_e);
+ 			if (ret)
+-				continue;
++				return ret;
+ 			if (copy_from_user((u8 *)task->reg + req->offset,
+ 					   req->data, req->size)) {
+ 				mpp_err("copy_from_user reg failed\n");
+@@ -305,12 +305,14 @@
+ 
+ 			ret = mpp_check_req(req, req_base, max_size, 0, max_size);
+ 			if (ret)
+-				continue;
++				return ret;
+ 
+ 			memcpy(&task->r_reqs[task->r_req_cnt++], req, sizeof(*req));
+ 		} break;
+ 		case MPP_CMD_SET_REG_ADDR_OFFSET: {
+-			mpp_extract_reg_offset_info(&task->off_inf, req);
++			ret = mpp_extract_reg_offset_info(&task->off_inf, req);
++			if (ret)
++				return ret;
+ 		} break;
+ 		case MPP_CMD_SET_RCB_INFO: {
+ 			struct rkvdec2_session_priv *priv = session->priv;
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvenc2.c b/drivers/video/rockchip/mpp/mpp_rkvenc2.c
+--- a/drivers/video/rockchip/mpp/mpp_rkvenc2.c
++++ b/drivers/video/rockchip/mpp/mpp_rkvenc2.c
+@@ -955,6 +955,10 @@
+ 					mpp_err("alloc class msg %d fail.\n", j);
+ 					goto fail;
+ 				}
++				if (task->w_req_cnt >= MPP_MAX_MSG_NUM) {
++					ret = -EINVAL;
++					goto fail;
++				}
+ 				wreq = &task->w_reqs[task->w_req_cnt];
+ 				rkvenc_update_req(task, j, req, wreq);
+ 				data = rkvenc_get_class_reg(task, wreq->offset);
+@@ -984,6 +988,10 @@
+ 					mpp_err("alloc class msg reg %d fail.\n", j);
+ 					goto fail;
+ 				}
++				if (task->r_req_cnt >= MPP_MAX_MSG_NUM) {
++					ret = -EINVAL;
++					goto fail;
++				}
+ 				rreq = &task->r_reqs[task->r_req_cnt];
+ 				rkvenc_update_req(task, j, req, rreq);
+ 				task->reg[j].valid = 1;
+@@ -991,7 +999,9 @@
+ 			}
+ 		} break;
+ 		case MPP_CMD_SET_REG_ADDR_OFFSET: {
+-			mpp_extract_reg_offset_info(&task->off_inf, req);
++			ret = mpp_extract_reg_offset_info(&task->off_inf, req);
++			if (ret)
++				goto fail;
+ 		} break;
+ 		case MPP_CMD_SET_RCB_INFO: {
+ 			struct rkvenc2_session_priv *priv = session->priv;

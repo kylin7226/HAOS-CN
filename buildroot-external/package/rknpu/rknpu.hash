@@ -1,5 +1,5 @@
 # https://github.com/lurenJBD/rk3588-rknn-core/archive/a6bcdb120b8a21255c6520f0504a13a5d37b9045.tar.gz
 # (upstream publishes no tags; pinned to this commit for reproducibility)
-sha256  9f30de630bdfd9bbbfb2f4914acc0cacfe55e3ffdd8a468ddeb65637adfc3037  rk3588-rknn-core-a6bcdb120b8a21255c6520f0504a13a5d37b9045.tar.gz
+sha256  9f30de630bdfd9bbbfb2f4914acc0cacfe55e3ffdd8a468ddeb65637adfc3037  rknpu-a6bcdb120b8a21255c6520f0504a13a5d37b9045.tar.gz
 # Locally computed from the tarball
 sha256  8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643  LICENSE

@@ -2,9 +2,6 @@ config BR2_PACKAGE_RKNPU
 	bool "rknpu (Rockchip RK3588 NPU, mainline)"
 	depends on BR2_LINUX_KERNEL
 	depends on BR2_aarch64
-	depends on BR2_INSTALL_LIBSTDCPP # librknnrt
-	depends on BR2_TOOLCHAIN_USES_GLIBC # librknnrt
-	select BR2_PACKAGE_LIBRKNNRT
 	help
 	  Clean-room out-of-tree RKNPU kernel driver for RK3588 that
 	  builds directly against mainline Linux (validated on 6.18/7.x).

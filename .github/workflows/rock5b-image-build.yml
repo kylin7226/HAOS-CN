@@ -1,38 +1,6 @@
 name: Rock 5B image build
 
-# Self-contained HAOS image build for the Radxa Rock 5B (RK3588), so the fork can
-# produce flashable images without the private desmond-dong/haos-cn-scripts repo
-# or any secret. It follows upstream home-assistant/operating-system's own build
-# flow (.github/workflows/build.yaml): assemble the build tree, build the
-# haos-builder container locally from upstream's Dockerfile, then run Buildroot
-# inside it with --privileged (loop devices are needed for the data partition).
-#
-# STAGES (workflow_dispatch input, so the port is validated step by step). A full
-# HAOS build does not fit in one 6-hour run on a standard 2-core runner, so the
-# expensive part is split into cumulative stages that carry state through ccache
-# (restore-keys also pick up upstream's haos-cc-rock5b cache):
-#   config      assemble + `make rock5b_defconfig` + audit the resolved .config
-#               (minutes; catches missing package registrations, dropped symbols,
-#               bad .hash files and fragment problems before paying for a build)
-#   packages    config + every userspace package, incl. the five Rock 5B ones
-#               (toolchain, rockchip-mpp, librga, librknnrt, rknpu's host deps,
-#               ffmpeg-rockchip, hassio containers)
-#   kernel      packages + linux (Image + rk3588-rock-5b.dtb via Buildroot, which
-#               applies patches/linux and the HAOS fragment chain) + rknpu.ko
-#   full        everything: bootloader, rootfs, the RAUC-signed disk image,
-#               linux-check-dotconfig and the image artifact upload
-#
-# A push to rock5b-port runs `config`, unless the commit message selects another
-# stage with [stage:packages] / [stage:kernel] / [stage:full] (or the [full]
-# shorthand), so regressions in the external tree are caught without burning hours.
-#
-# The CN-specific bits that haos.sh normally injects are not needed for rock5b:
-# this tree ships its own Config.in / external.mk / external.desc, and the only
-# defconfig symbol it cannot resolve is BR2_PACKAGE_RTL8821CU (a private HAOS-CN
-# package); it is reported as a warning instead of failing the build.
-#
-# DEBUG WITHOUT A TOKEN: fork job logs need admin rights, but check-run
-# annotations do not, so every failure path re-emits the real cause as ::error::.
+# Full builds require persistent signing secrets; earlier stages need no private repository.
 
 on:
   workflow_dispatch:
@@ -56,6 +24,8 @@ on:
     paths:
       - 'buildroot-external/**'
       - '.github/workflows/rock5b-image-build.yml'
+      - '.github/scripts/**'
+      - '.github/tests/**'
 
 concurrency:
   group: rock5b-image-${{ github.ref }}
@@ -78,11 +48,12 @@ jobs:
       # stage instead (and [full] is kept as a shorthand).
       STAGE: ${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }}
       UPSTREAM_REF: ${{ inputs.upstream_ref || '18.5' }}
-      RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
-      RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
     steps:
       - name: Checkout HAOS-CN
         uses: actions/checkout@v7
+
+      - name: Run local regression checks
+        run: python3 -m unittest discover -s .github/tests -v
 
       - name: Free up disk space
         run: |
@@ -121,25 +92,17 @@ jobs:
         run: |
           set -euo pipefail
           cd "${BUILD_TREE}"
-          version_dev="dev$(date --utc +'%Y%m%d')"
+          version_dev="dev${GITHUB_RUN_ID}$(printf '%04d' "${GITHUB_RUN_ATTEMPT}")"
           sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${version_dev}\2/" buildroot-external/meta
+          echo "HISTORY_TAG=v$(date --utc +'%Y.%m.%d')-rock5b.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_ENV}"
           grep '^VERSION' buildroot-external/meta
 
-      - name: Generate RAUC signing key
-        run: |
-          set -euo pipefail
-          cd "${BUILD_TREE}"
-          if [ -n "${RAUC_CERTIFICATE}" ] && [ -n "${RAUC_PRIVATE_KEY}" ]; then
-            echo "Using the RAUC secrets from the repository settings."
-            printf -- '-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' \
-              "${RAUC_CERTIFICATE}" > cert.pem
-            printf -- '-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n' \
-              "${RAUC_PRIVATE_KEY}" > key.pem
-          else
-            echo "::warning::No RAUC_CERTIFICATE/RAUC_PRIVATE_KEY secrets; building with a public self-signed certificate (this image cannot OTA-update to a signed release)."
-            buildroot-external/scripts/generate-signing-key.sh cert.pem key.pem
-          fi
-          test -s cert.pem && test -s key.pem
+      - name: Prepare persistent RAUC signing key
+        if: env.STAGE == 'full'
+        env:
+          RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
+          RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+        run: bash .github/scripts/prepare-rauc-signing.sh "${BUILD_TREE}"
 
       - name: Build the haos-builder container image
         run: |
@@ -176,14 +139,18 @@ jobs:
                    BR2_PACKAGE_RAUC; do
             grep -q "^${s}=y$" "${cfg}" || { echo "::error::${s} is not enabled ($(grep "^${s}=" "${cfg}" || echo unset))"; fail=1; }
           done
+          if grep -q '^BR2_PACKAGE_LIBRKNNRT=y$' "${cfg}"; then
+            echo "::error::Host librknnrt must remain optional; containers provide the runtime"
+            fail=1
+          fi
           echo "--- RK3588 media/AI packages ---"
           # Mandatory (kernel side): the rknpu out-of-tree module and the kernel
           # itself. The MPP/RGA drivers, Panthor (GPU) and pwm-fan + thermal
           # (fan control) are compiled INTO the kernel by
           # board/radxa/rock5b/kernel.config, so there is no package for them.
-          for s in BR2_PACKAGE_RKNPU BR2_PACKAGE_LIBRKNNRT BR2_LINUX_KERNEL; do
+          for s in BR2_PACKAGE_RKNPU BR2_PACKAGE_LINUX_FIRMWARE_ARM_MALI_CSF BR2_LINUX_KERNEL; do
             grep -q "^${s}=y$" "${cfg}" || {
-              echo "::error::${s} was dropped, but the kernel-side RKNPU/GPU/fan support depends on it"; fail=1; }
+              echo "::error::Required driver or firmware configuration ${s} was dropped"; fail=1; }
           done
           # Userspace accelerators: nice to have, containers can bring their own
           # (see the board kernel.config note), so a drop is a warning, not an error.
@@ -195,8 +162,7 @@ jobs:
             fi
           done
           echo "--- known-unavailable HAOS-CN symbols (private packages, tolerated) ---"
-          for s in BR2_PACKAGE_RTL8821CU BR2_PACKAGE_AP6236_FIRMWARE \
-                   BR2_PACKAGE_AP6256_FIRMWARE BR2_PACKAGE_MATTER; do
+          for s in BR2_PACKAGE_RTL8821CU; do
             grep -q "^${s}=y$" "${cfg}" || echo "::warning::${s}=y is requested by rock5b_defconfig but not set (private HAOS-CN package, absent from this self-contained tree)"
           done
           echo "--- kernel config chain ---"
@@ -215,8 +181,8 @@ jobs:
             # rebuilds them ccache-warm (only /mnt/cache/cc persists between runs, not
             # the output/ stamps). The kernel stage is the first to compile the
             # mandatory out-of-tree rknpu.ko against the image kernel.
-            packages) targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent" ;;
-            kernel)   targets="rockchip-mpp librga librknnrt ffmpeg-rockchip hassio host-tempio os-agent linux rknpu" ;;
+            packages) targets="rockchip-mpp librga ffmpeg-rockchip hassio host-tempio os-agent" ;;
+            kernel)   targets="rockchip-mpp librga ffmpeg-rockchip hassio host-tempio os-agent linux rknpu" ;;
             full)     targets="" ;;
             *) echo "::error::unknown stage '${STAGE}'"; exit 1 ;;
           esac
@@ -294,11 +260,16 @@ jobs:
             echo "--- rknpu.ko (out-of-tree NPU module) ---"
             ls -la /mnt/output/build/rknpu-*/rknpu.ko 2>/dev/null \
               || { echo "::error::rknpu.ko was not built"; fail=1; }
-            ls -la /mnt/output/target/lib/modules/*/kernel/drivers/*rknpu* 2>/dev/null \
-              || find /mnt/output/target/lib/modules -name 'rknpu*.ko*' -print \
-              || { echo "::error::rknpu.ko was not installed into the target rootfs"; fail=1; }
+            if ! module=$(find /mnt/output/target/lib/modules -type f -name 'rknpu.ko*' -print -quit) || [ -z "${module}" ]; then
+              echo "::error::rknpu.ko was not installed into the target rootfs"
+              fail=1
+            fi
           fi
           if [ "${want_img}" = 1 ]; then
+            if ! firmware=$(find /mnt/output/target -path '*/firmware/arm/mali/arch*/mali_csffw.bin' -type f -print -quit) || [ -z "${firmware}" ]; then
+              echo "::error::Panthor CSF firmware is missing from the rootfs"
+              fail=1
+            fi
             ls -la /mnt/output/images/ || true
             compgen -G '/mnt/output/images/haos_*' > /dev/null \
               || { echo "::error::no haos_* image was produced in output/images"; fail=1; }
@@ -335,15 +306,38 @@ jobs:
             echo "::error::no haos_rock5b-*.img.xz was produced in output/images (the board hook runs convert_disk_image_xz)"
             exit 1
           fi
-          # genimage builds the .raucb OTA bundle as a second image (genimage.cfg
-          # -> image-raucb-spl.cfg), signed with the self-signed cert.pem/key.pem.
           if ! compgen -G 'haos_rock5b-*.raucb' > /dev/null; then
             echo "::error::no haos_rock5b-*.raucb was produced in output/images (genimage should bundle the RAUC OTA image)"
             exit 1
           fi
-          sha256sum haos_rock5b-*.img.xz haos_rock5b-*.raucb > SHA256SUMS.rock5b
+          {
+            printf 'overlay_commit=%s\nupstream_ref=%s\n' "${GITHUB_SHA}" "${UPSTREAM_REF}"
+            printf 'upstream_commit=%s\n' "$(git -C "${BUILD_TREE}" rev-parse HEAD)"
+            printf 'buildroot_commit=%s\n' "$(git -C "${BUILD_TREE}/buildroot" rev-parse HEAD)"
+            printf 'run_id=%s\nrun_attempt=%s\n' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+            openssl x509 -in "${BUILD_TREE}/cert.pem" -noout -sha256 -fingerprint -enddate
+          } > build-info.txt
+          sha256sum haos_rock5b-*.img.xz haos_rock5b-*.raucb build-info.txt > SHA256SUMS.rock5b
           cat SHA256SUMS.rock5b
           du -h haos_rock5b-*.img.xz haos_rock5b-*.raucb
+
+      - name: Preserve a historical release
+        if: env.STAGE == 'full'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.HISTORY_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Rock 5B ${{ env.HISTORY_TAG }}
+          body: |
+            Historical Rock 5B build from `${{ github.sha }}` against HAOS `${{ env.UPSTREAM_REF }}`.
+            OTA requires compatible `haos-rock5b` and trust in the signing certificate recorded in `build-info.txt`.
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            /mnt/output/images/haos_rock5b-*.img.xz
+            /mnt/output/images/haos_rock5b-*.raucb
+            /mnt/output/images/SHA256SUMS.rock5b
+            /mnt/output/images/build-info.txt
 
       - name: Publish the image to the rock5b-dev release
         if: env.STAGE == 'full'
@@ -352,20 +346,24 @@ jobs:
           tag_name: rock5b-dev
           name: Rock 5B (RK3588) development images
           body: |
-            Self-signed development images for the Radxa Rock 5B, built by the
+            Development images for the Radxa Rock 5B, built by the
             `Rock 5B image build` workflow from branch `${{ github.ref_name }}`
             (commit `${{ github.sha }}`).
 
             - `haos_rock5b-*.img.xz` — full disk image, flash to an SD/eMMC for a
               fresh install.
-            - `haos_rock5b-*.raucb` — RAUC A/B OTA update bundle. Signed with a
-              public self-signed certificate, so it is NOT OTA-updatable to/from a
-              signed release; use it only against a device flashed with this build.
+            - `haos_rock5b-*.raucb` — signed RAUC A/B OTA update bundle. The device
+              must trust the configured signing certificate and use compatible
+              `haos-rock5b`. Images signed with earlier temporary keys need a
+              deliberate trust migration or a fresh installation.
+            - Signing certificate fingerprint and source revisions: `build-info.txt`.
+            - Historical build: `${{ env.HISTORY_TAG }}`.
           prerelease: true
           files: |
             /mnt/output/images/haos_rock5b-*.img.xz
             /mnt/output/images/haos_rock5b-*.raucb
             /mnt/output/images/SHA256SUMS.rock5b
+            /mnt/output/images/build-info.txt
 
       - name: Upload image artifact
         if: env.STAGE == 'full'
@@ -376,6 +374,7 @@ jobs:
             /mnt/output/images/haos_rock5b-*.img.xz
             /mnt/output/images/haos_rock5b-*.raucb
             /mnt/output/images/SHA256SUMS.rock5b
+            /mnt/output/images/build-info.txt
           retention-days: 7
           if-no-files-found: error
 
@@ -396,5 +395,8 @@ jobs:
             /tmp/build.log
             /tmp/dotconfig.log
             /tmp/docker-build.log
+            /mnt/output/build/linux-*/.config
+            /mnt/output/build/uboot-*/.config
+            /mnt/output/images/build-info.txt
           retention-days: 7
           if-no-files-found: ignore

@@ -3,24 +3,21 @@ name: Rock 5B kernel verify
 # Self-contained compile check for the Radxa Rock 5B (RK3588) kernel port.
 # It deliberately does NOT use the private desmond-dong/haos-cn-scripts repo or
 # any secret, so it can run on a fork. It validates the highest-risk parts of the
-# port against pristine mainline v6.18 (the version configs/rock5b_defconfig pins):
-#   1. the vendored ysp MPP/RGA patches apply cleanly,
-#   2. the kernel .config resolves exactly like the real HAOS build (see below),
+# port against Linux v6.18.58 with the pinned HAOS global patches:
+#   1. the global and board patches apply cleanly,
+#   2. the HAOS kernel base and board fragment chain resolves,
 #   3. the kernel + the in-tree vendor drivers (MPP/RGA/Panthor/pwm-fan) build,
 #   4. the Rock 5B device tree compiles (rk3588-rock-5b.dtb), which exercises the
 #      rknpu / pwm-fan (both mainline) and vendor MPP-RGA DT nodes.
 #
-# CONFIG FIDELITY: the kernel is configured the way Buildroot does it, not from a
-# generic defconfig. configs/rock5b_defconfig uses
+# This compile-only check does not replace the full Buildroot image audit. configs/rock5b_defconfig uses
 #   BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG  -> kernel/v6.18.y/kernel-arm64-rockchip.config (full base)
 #   BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES -> haos.config docker.config
 #       device-support.config device-support-wireless.config board/radxa/rock5b/kernel.config
 # Those base+fragment files live in the UPSTREAM home-assistant/operating-system
 # tree (HAOS-CN only ships the board fragment), so we sparse-clone just that kernel
 # dir, overlay it, then parse base+fragments straight out of rock5b_defconfig and
-# merge them with the kernel's own merge_config.sh. device-support.config is what
-# enables the media gates (MEDIA_CAMERA_SUPPORT / MEDIA_PLATFORM_SUPPORT / VIDEO_DEV)
-# that the board fragment's VIDEO_V4L2 / V4L2_MEM2MEM_DEV depend on.
+# merge them with the kernel's own merge_config.sh.
 #
 # DEBUG WITHOUT A TOKEN: fork job logs need admin rights, but check-run annotations
 # do not. Every failure path here re-emits the real cause as ::error::/::warning::
@@ -47,10 +44,11 @@ env:
   ARCH: arm64
   CROSS_COMPILE: aarch64-linux-gnu-
   KVER: "6.18.58"
+  UPSTREAM_REF: '18.5'
 
 jobs:
   verify:
-    name: Build mainline v6.18 + Rock 5B patches
+    name: Compile pinned HAOS kernel + Rock 5B patches
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -77,46 +75,34 @@ jobs:
           test -d "linux-${KVER}"
           echo "LINUX_DIR=${RUNNER_TEMP}/linux-${KVER}" >> "${GITHUB_ENV}"
 
-      - name: Apply board kernel patches (Buildroot lexical order)
+      - name: Fetch pinned upstream kernel configuration and patches
+        run: |
+          set -euo pipefail
+          up="${RUNNER_TEMP}/os-upstream"
+          git clone --quiet --depth 1 --branch "${UPSTREAM_REF}" --filter=blob:none --sparse \
+            https://github.com/home-assistant/operating-system.git "${up}"
+          git -C "${up}" sparse-checkout set buildroot-external/kernel buildroot-external/patches/linux
+          ext="${GITHUB_WORKSPACE}/buildroot-external"
+          mkdir -p "${ext}/kernel"
+          cp -an "${up}/buildroot-external/kernel/." "${ext}/kernel/"
+
+      - name: Apply global and board kernel patches
         run: |
           set -euo pipefail
           cd "${LINUX_DIR}"
-          # git init so `git apply` can run and will auto-create new directories
-          # for the vendored driver files (Buildroot uses patch -p1; git apply is
-          # stricter and gives better diagnostics for the same end result).
-          git init -q .
-          pdir="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/patches/linux"
-          for p in $(find "${pdir}" -maxdepth 1 -name '*.patch' | sort); do
-            n="$(basename "${p}")"
-            echo "::group::apply ${n}"
-            if ! git apply --verbose --whitespace=nowarn "${p}"; then
+          for pdir in "${RUNNER_TEMP}/os-upstream/buildroot-external/patches/linux" \
+                      "${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/patches/linux"; do
+            for p in "${pdir}"/*.patch; do
+              n="$(basename "${p}")"
+              echo "::group::apply ${n}"
+              if ! git apply --verbose --whitespace=nowarn "${p}"; then
+                echo "::endgroup::"
+                echo "::error file=${n}::patch failed to apply to v${KVER}"
+                exit 1
+              fi
               echo "::endgroup::"
-              echo "::error file=${n}::patch failed to apply to pristine v${KVER}"
-              exit 1
-            fi
-            echo "::endgroup::"
+            done
           done
-
-      - name: Overlay upstream HAOS kernel config (base + fragment chain)
-        run: |
-          set -euo pipefail
-          # HAOS-CN ships only board/radxa/rock5b/kernel.config; the full base
-          # config (kernel-arm64-rockchip.config) and the v6.18.y fragments come
-          # from upstream home-assistant/operating-system. Sparse-clone just that
-          # kernel dir and drop it beside HAOS-CN's buildroot-external/kernel/ so
-          # $(BR2_EXTERNAL_HAOS_PATH)/kernel/v6.18.y/* resolves like the real build.
-          up="${RUNNER_TEMP}/os-upstream"
-          # Pin to the same upstream release the image build uses (UPSTREAM_REF in
-          # rock5b-image-build.yml), so the base+fragment config verified here is
-          # byte-identical to the one the real rock5b image is built with.
-          git clone --quiet --depth 1 --branch 18.5 --filter=blob:none --sparse \
-            https://github.com/home-assistant/operating-system.git "${up}"
-          git -C "${up}" sparse-checkout set buildroot-external/kernel
-          ext="${GITHUB_WORKSPACE}/buildroot-external"
-          mkdir -p "${ext}/kernel"
-          cp -r "${up}/buildroot-external/kernel/v6.18.y" "${ext}/kernel/"
-          echo "Overlaid upstream kernel config dir:"
-          ls -la "${ext}/kernel/v6.18.y"
 
       - name: Configure (faithful HAOS base config + fragment chain)
         run: |
@@ -175,22 +161,6 @@ jobs:
           else
             echo "ok    CONFIG_DRM_ACCEL_ROCKET off (rknpu.ko owns the NPU)"
           fi
-
-          echo "--- built-in (=y) vendor MPP/RGA vs the V4L2 symbols they link against ---"
-          # The vendor MPP/RGA drivers are built INTO vmlinux (=y). Any V4L2 /
-          # videobuf2 symbol they reference must also be =y; if it is =m (module)
-          # or unset, the vmlinux link dies with undefined references. Flag it as
-          # an annotation BEFORE the long build so the cause is obvious.
-          for s in CONFIG_V4L2_MEM2MEM_DEV CONFIG_VIDEOBUF2_CORE \
-                   CONFIG_VIDEOBUF2_V4L2 CONFIG_VIDEOBUF2_MEMOPS CONFIG_VIDEOBUF2_VMALLOC \
-                   CONFIG_VIDEOBUF2_DMA_CONTIG; do
-            v="$(grep -E "^${s}=" .config || echo unset)"
-            case "${v}" in
-              *=y) echo "ok    ${v}" ;;
-              *=m) echo "::warning::${v} is =m but the built-in (=y) MPP/RGA drivers link against it; if the build fails with 'undefined reference', force ${s}=y in board/radxa/rock5b/kernel.config" ;;
-              *)   echo "::warning::${s} is ${v}; built-in MPP/RGA may require it =y" ;;
-            esac
-          done
 
           echo "--- non-critical requested =y symbols from the board fragment that dropped ---"
           frag="${GITHUB_WORKSPACE}/buildroot-external/board/radxa/rock5b/kernel.config"
