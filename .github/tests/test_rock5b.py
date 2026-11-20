@@ -204,7 +204,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("files with different content (1)", result.stdout)
 
     def test_rebuilds_have_distinct_versions(self):
-        script = workflow_script("rock5b-image-build.yml", "Set development version suffix")
+        script = workflow_script("rock5b-image-build.yml", "Set image version and release tags")
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             meta = base / "buildroot-external/meta"
@@ -215,7 +215,7 @@ class WorkflowTests(unittest.TestCase):
                 meta.write_text('VERSION_SUFFIX="dev"\n')
                 output = base / "env"
                 output.write_text("")
-                env = dict(os.environ, BUILD_TREE=tmp, GITHUB_ENV=str(output),
+                env = dict(os.environ, BUILD_TREE=tmp, GITHUB_ENV=str(output), CHANNEL="dev",
                            GITHUB_RUN_ID="12", GITHUB_RUN_ATTEMPT=attempt, GITHUB_SHA="abcdef123456")
                 result = run("bash", "-c", script, env=env)
                 self.assertEqual(result.returncode, 0, result.stderr)

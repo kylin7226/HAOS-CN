@@ -16,9 +16,33 @@ on:
           - kernel
           - full
       upstream_ref:
-        description: 'home-assistant/operating-system ref to build against'
+        description: 'Upstream ref (empty = latest stable for stable channel, 18.5 for dev)'
+        required: false
+        type: string
+      channel:
+        description: 'Release channel (stable always builds the full image)'
+        type: choice
+        default: dev
+        options: [dev, stable]
+  workflow_call:
+    inputs:
+      stage:
+        type: string
+        default: full
+      upstream_ref:
+        type: string
+        default: ''
+      channel:
+        type: string
+        default: stable
+      overlay_ref:
+        type: string
         required: true
-        default: '18.5'
+    secrets:
+      RAUC_CERTIFICATE:
+        required: true
+      RAUC_PRIVATE_KEY:
+        required: true
   push:
     branches: [rock5b-port]
     paths:
@@ -28,29 +52,94 @@ on:
       - '.github/tests/**'
 
 concurrency:
-  group: rock5b-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: rock5b-image-${{ (inputs.channel == 'stable' || contains(github.event.head_commit.message, '[release:stable]')) && 'stable' || github.ref }}
+  cancel-in-progress: ${{ inputs.channel != 'stable' && !contains(github.event.head_commit.message, '[release:stable]') }}
 
 permissions:
-  contents: write   # publish the image to the fixed rock5b-dev release tag
+  contents: write
 
 env:
   UPSTREAM_REPO: https://github.com/home-assistant/operating-system.git
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.stable.outputs.build || steps.selection.outputs.build }}
+      channel: ${{ steps.selection.outputs.channel }}
+      stage: ${{ steps.selection.outputs.stage }}
+      upstream_ref: ${{ steps.stable.outputs.upstream_ref || steps.selection.outputs.upstream_ref }}
+      upstream_sha: ${{ steps.stable.outputs.upstream_sha }}
+      release_tag: ${{ steps.stable.outputs.release_tag }}
+      overlay_sha: ${{ steps.selection.outputs.overlay_sha }}
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.overlay_ref || github.sha }}
+
+      - name: Select build channel
+        id: selection
+        env:
+          CHANNEL: ${{ inputs.channel || (contains(github.event.head_commit.message, '[release:stable]') && 'stable' || 'dev') }}
+          STAGE: ${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          PUSH_MESSAGE: ${{ github.event_name == 'push' && github.event.head_commit.message || '' }}
+        run: |
+          set -euo pipefail
+          case "${CHANNEL}" in
+            stable)
+              STAGE=full
+              if [ -z "${UPSTREAM_REF}" ] && [[ "${PUSH_MESSAGE}" =~ \[upstream:([0-9]+\.[0-9]+(\.[0-9]+)?)\] ]]; then
+                UPSTREAM_REF="${BASH_REMATCH[1]}"
+              fi
+              ;;
+            dev) UPSTREAM_REF="${UPSTREAM_REF:-18.5}" ;;
+            *) echo '::error::Unknown release channel'; exit 1 ;;
+          esac
+          case "${STAGE}" in
+            config|packages|kernel|full) ;;
+            *) echo '::error::Unknown build stage'; exit 1 ;;
+          esac
+          [[ "${UPSTREAM_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || -z "${UPSTREAM_REF}" ]] || {
+            echo '::error::Invalid upstream ref'; exit 1;
+          }
+          {
+            echo "channel=${CHANNEL}"
+            echo "stage=${STAGE}"
+            echo "upstream_ref=${UPSTREAM_REF}"
+            echo "overlay_sha=$(git rev-parse HEAD)"
+            [ "${CHANNEL}" != dev ] || echo 'build=true'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve official release and skip completed builds
+        id: stable
+        if: steps.selection.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ steps.selection.outputs.upstream_ref }}
+        run: python3 .github/scripts/resolve-rock5b-release.py
+
   build:
-    name: Rock 5B image (${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }})
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    name: Rock 5B ${{ needs.prepare.outputs.channel }} ${{ needs.prepare.outputs.upstream_ref }} (${{ needs.prepare.outputs.stage }})
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
-      # No PAT is available on this fork, so workflow_dispatch cannot be triggered
-      # by the API: a push whose commit message carries [stage:<name>] selects the
-      # stage instead (and [full] is kept as a shorthand).
-      STAGE: ${{ inputs.stage || (contains(github.event.head_commit.message, '[stage:packages]') && 'packages' || contains(github.event.head_commit.message, '[stage:kernel]') && 'kernel' || contains(github.event.head_commit.message, '[stage:full]') && 'full' || contains(github.event.head_commit.message, '[full]') && 'full' || 'config') }}
-      UPSTREAM_REF: ${{ inputs.upstream_ref || '18.5' }}
+      STAGE: ${{ needs.prepare.outputs.stage }}
+      CHANNEL: ${{ needs.prepare.outputs.channel }}
+      UPSTREAM_REF: ${{ needs.prepare.outputs.upstream_ref }}
+      UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+      OVERLAY_SHA: ${{ needs.prepare.outputs.overlay_sha }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - name: Checkout HAOS-CN
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.OVERLAY_SHA }}
 
       - name: Run local regression checks
         run: python3 -m unittest discover -s .github/tests -v
@@ -78,8 +167,14 @@ jobs:
           # upstream packages; this fork overlays its buildroot-external on top,
           # exactly like HAOS-CN's Builder.yml does (cp -r buildroot-external ...).
           git clone --quiet --depth 1 --branch "${UPSTREAM_REF}" "${UPSTREAM_REPO}" os-up
+          if [ "${CHANNEL}" = stable ] && [ "$(git -C os-up rev-parse HEAD)" != "${UPSTREAM_SHA}" ]; then
+            echo '::error::Upstream release tag moved after detection; refusing to build'; exit 1
+          fi
           git -C os-up submodule update --init --depth 1
           cp -a buildroot-external/. os-up/buildroot-external/
+          if [ "${CHANNEL}" = stable ]; then
+            python3 .github/scripts/sync-rock5b-upstream.py os-up
+          fi
           for f in external.desc external.mk Config.in scripts/post-image.sh \
                    configs/rock5b_defconfig kernel/v6.18.y/kernel-arm64-rockchip.config \
                    board/radxa/rock5b/meta Dockerfile; do
@@ -88,12 +183,21 @@ jobs:
           done
           echo "BUILD_TREE=${GITHUB_WORKSPACE}/os-up" >> "${GITHUB_ENV}"
 
-      - name: Set development version suffix
+      - name: Set image version and release tags
         run: |
           set -euo pipefail
           cd "${BUILD_TREE}"
-          version_dev="dev${GITHUB_RUN_ID}$(printf '%04d' "${GITHUB_RUN_ATTEMPT}")"
-          sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${version_dev}\2/" buildroot-external/meta
+          if [ "${CHANNEL}" = stable ]; then
+            git show HEAD:buildroot-external/meta > buildroot-external/meta
+            . buildroot-external/meta
+            version="${VERSION_MAJOR}.${VERSION_MINOR}${VERSION_SUFFIX:+.${VERSION_SUFFIX}}"
+            if [ "${version}" != "${UPSTREAM_REF}" ]; then
+              echo '::error::Official release metadata does not match its tag'; exit 1
+            fi
+          else
+            version_dev="dev${GITHUB_RUN_ID}$(printf '%04d' "${GITHUB_RUN_ATTEMPT}")"
+            sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${version_dev}\2/" buildroot-external/meta
+          fi
           echo "HISTORY_TAG=v$(date --utc +'%Y.%m.%d')-rock5b.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_ENV}"
           grep '^VERSION' buildroot-external/meta
 
@@ -310,8 +414,14 @@ jobs:
             echo "::error::no haos_rock5b-*.raucb was produced in output/images (genimage should bundle the RAUC OTA image)"
             exit 1
           fi
+          if [ "${CHANNEL}" = stable ]; then
+            test -s "haos_rock5b-${UPSTREAM_REF}.img.xz"
+            test -s "haos_rock5b-${UPSTREAM_REF}.raucb"
+          fi
           {
-            printf 'overlay_commit=%s\nupstream_ref=%s\n' "${GITHUB_SHA}" "${UPSTREAM_REF}"
+            printf 'overlay_commit=%s\nupstream_ref=%s\n' "${OVERLAY_SHA}" "${UPSTREAM_REF}"
+            printf 'channel=%s\n' "${CHANNEL}"
+            grep -E '^BR2_(LINUX_KERNEL|TARGET_UBOOT)_CUSTOM_VERSION_VALUE=' /mnt/output/.config
             printf 'upstream_commit=%s\n' "$(git -C "${BUILD_TREE}" rev-parse HEAD)"
             printf 'buildroot_commit=%s\n' "$(git -C "${BUILD_TREE}/buildroot" rev-parse HEAD)"
             printf 'run_id=%s\nrun_attempt=%s\n' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
@@ -326,10 +436,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.HISTORY_TAG }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ env.OVERLAY_SHA }}
           name: Rock 5B ${{ env.HISTORY_TAG }}
           body: |
-            Historical Rock 5B build from `${{ github.sha }}` against HAOS `${{ env.UPSTREAM_REF }}`.
+            Historical Rock 5B ${{ env.CHANNEL }} build from `${{ env.OVERLAY_SHA }}` against HAOS `${{ env.UPSTREAM_REF }}`.
             OTA requires compatible `haos-rock5b` and trust in the signing certificate recorded in `build-info.txt`.
           prerelease: true
           fail_on_unmatched_files: true
@@ -339,16 +449,17 @@ jobs:
             /mnt/output/images/SHA256SUMS.rock5b
             /mnt/output/images/build-info.txt
 
-      - name: Publish the image to the rock5b-dev release
+      - name: Publish the image to the channel release
         if: env.STAGE == 'full'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rock5b-dev
-          name: Rock 5B (RK3588) development images
+          tag_name: rock5b-${{ env.CHANNEL }}
+          target_commitish: ${{ env.OVERLAY_SHA }}
+          name: Rock 5B (RK3588) ${{ env.CHANNEL }} images
           body: |
-            Development images for the Radxa Rock 5B, built by the
-            `Rock 5B image build` workflow from branch `${{ github.ref_name }}`
-            (commit `${{ github.sha }}`).
+            Community Rock 5B ${{ env.CHANNEL }} images based on HAOS `${{ env.UPSTREAM_REF }}`,
+            built from overlay commit `${{ env.OVERLAY_SHA }}`.
+            This is an unofficial board port, not an official Home Assistant OS board release.
 
             - `haos_rock5b-*.img.xz` — full disk image, flash to an SD/eMMC for a
               fresh install.
@@ -358,10 +469,35 @@ jobs:
               deliberate trust migration or a fresh installation.
             - Signing certificate fingerprint and source revisions: `build-info.txt`.
             - Historical build: `${{ env.HISTORY_TAG }}`.
-          prerelease: true
+          prerelease: ${{ env.CHANNEL != 'stable' }}
+          make_latest: false
+          fail_on_unmatched_files: true
           files: |
             /mnt/output/images/haos_rock5b-*.img.xz
             /mnt/output/images/haos_rock5b-*.raucb
+            /mnt/output/images/SHA256SUMS.rock5b
+            /mnt/output/images/build-info.txt
+
+      - name: Publish the versioned stable release
+        if: env.STAGE == 'full' && env.CHANNEL == 'stable'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ env.OVERLAY_SHA }}
+          name: Rock 5B - HAOS ${{ env.UPSTREAM_REF }}
+          body: |
+            Community Rock 5B image based on official HAOS release `${{ env.UPSTREAM_REF }}`.
+            Overlay commit: `${{ env.OVERLAY_SHA }}`. Historical build: `${{ env.HISTORY_TAG }}`.
+            This is an unofficial board port; hardware validation is separate from CI build checks.
+            The `.img.xz` is for flashing; the `.raucb` is for devices trusting the configured
+            persistent signing certificate with RAUC compatible `haos-rock5b`.
+            See `SHA256SUMS.rock5b` and `build-info.txt` for checksums and source/signing provenance.
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            /mnt/output/images/haos_rock5b-${{ env.UPSTREAM_REF }}.img.xz
+            /mnt/output/images/haos_rock5b-${{ env.UPSTREAM_REF }}.raucb
             /mnt/output/images/SHA256SUMS.rock5b
             /mnt/output/images/build-info.txt
 
