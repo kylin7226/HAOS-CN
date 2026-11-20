@@ -1,0 +1,28 @@
+name: Follow official HAOS releases (Rock 5B)
+
+# GitHub schedules only the default branch; keep this entry point on dev too.
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: 'Official release tag (empty = latest stable)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'kylin7226/HAOS-CN'
+    uses: kylin7226/HAOS-CN/.github/workflows/rock5b-image-build.yml@rock5b-port
+    with:
+      channel: stable
+      stage: full
+      upstream_ref: ${{ inputs.upstream_ref || '' }}
+      overlay_ref: rock5b-port
+    secrets:
+      RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
+      RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
